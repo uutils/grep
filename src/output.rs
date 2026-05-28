@@ -8,6 +8,7 @@ use crate::context_buffer::LineView;
 use std::ffi::OsStr;
 use std::io::{self, BufWriter, StdoutLock, Write};
 use std::path::Path;
+use uucore::error::strip_errno;
 
 #[cfg(target_pointer_width = "64")]
 const BUF_SIZE: usize = 128 * 1024;
@@ -195,7 +196,12 @@ impl<'a> OutputWriter<'a> {
     /// Write an IO error to stderr.
     pub fn report_io_error(&self, label: &OsStr, err: &io::Error) {
         if !self.config.no_messages && !self.config.quiet {
-            eprintln!("grep: {label}: {err}", label = label.to_string_lossy());
+            // Strip the trailing " (os error XX)" so the message matches GNU grep.
+            eprintln!(
+                "grep: {label}: {err}",
+                label = label.to_string_lossy(),
+                err = strip_errno(err)
+            );
         }
     }
 

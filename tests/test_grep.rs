@@ -1031,6 +1031,16 @@ fn nonexistent_file_is_error() {
 }
 
 #[test]
+fn nonexistent_file_error_has_no_os_error_suffix() {
+    // GNU prints "grep: <file>: No such file or directory" with no
+    // " (os error 2)" suffix; strip_errno keeps us byte-compatible.
+    let (_s, mut c) = ucmd();
+    c.args(&["x", "does-not-exist"])
+        .fails_with_code(2)
+        .stderr_is("grep: does-not-exist: No such file or directory\n");
+}
+
+#[test]
 fn dash_argument_means_stdin() {
     let (_s, mut c) = ucmd();
     c.args(&["x", "-"])
