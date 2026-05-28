@@ -421,6 +421,10 @@ pub fn uu_app() -> Command {
         .about("Search for PATTERNS in each FILE.")
         .disable_help_flag(true)
         .disable_version_flag(true)
+        // GNU grep accepts repeated options (booleans are idempotent, value
+        // options take the last); make clap replace rather than error. Args
+        // with ArgAction::Append (e.g. -e/-f/--include) still accumulate.
+        .args_override_self(true)
         .after_help(
             "When FILE is '-', read standard input.  If no FILE is given, read standard \
              input, but with -r, recursively search the working directory instead.  With \

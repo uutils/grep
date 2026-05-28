@@ -1138,3 +1138,38 @@ fn help_and_version() {
         .succeeds()
         .stdout_contains(env!("CARGO_PKG_VERSION"));
 }
+
+#[test]
+fn repeated_options_are_accepted() {
+    // GNU grep tolerates options given more than once: boolean flags are
+    // idempotent and value options take the last occurrence. clap would
+    // otherwise error with "cannot be used multiple times".
+
+    // Repeated boolean flags are a no-op (not an error).
+    let (_s, mut c) = ucmd();
+    c.args(&["-n", "-n", "a"])
+        .pipe_in("abc\n")
+        .succeeds()
+        .stdout_only("1:abc\n");
+
+    // Mixed repeated booleans behave like a single occurrence.
+    let (_s, mut c) = ucmd();
+    c.args(&["-i", "-i", "abc"])
+        .pipe_in("ABC\n")
+        .succeeds()
+        .stdout_only("ABC\n");
+
+    // Repeated value options take the last value (here: -m 1 wins).
+    let (_s, mut c) = ucmd();
+    c.args(&["-m", "5", "-m", "1", "x"])
+        .pipe_in("x\nx\nx\n")
+        .succeeds()
+        .stdout_only("x\n");
+
+    // -e (ArgAction::Append) must still accumulate every pattern.
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "a", "-e", "b"])
+        .pipe_in("a\nb\nc\n")
+        .succeeds()
+        .stdout_only("a\nb\n");
+}
