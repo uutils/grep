@@ -11,6 +11,12 @@
 A Rust implementation of [GNU Grep](https://www.gnu.org/software/grep/).
 This project is an initial release and may contain bugs.
 
+## Install
+
+```shell
+cargo install uu_grep
+``
+
 ## Building
 
 Download Rust at: https://rustup.rs/
