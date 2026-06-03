@@ -15,7 +15,7 @@ This project is an initial release and may contain bugs.
 
 ```shell
 cargo install uu_grep
-``
+```
 
 ## Building
 
