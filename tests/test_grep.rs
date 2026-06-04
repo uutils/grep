@@ -70,6 +70,18 @@ fn bre_gnu_extensions() {
         .succeeds()
         .stdout_only("contain\n");
 
+    let (_s, mut c) = ucmd();
+    c.args(&[r"\`c"])
+        .pipe_in("cat\nscat\n")
+        .succeeds()
+        .stdout_only("cat\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&[r"t\'"])
+        .pipe_in("cat\ntab\n")
+        .succeeds()
+        .stdout_only("cat\n");
+
     // BRE backreference: repeated adjacent word.
     let (_s, mut c) = ucmd();
     c.args(&[r"\(\b\w\+\b\) \1"])

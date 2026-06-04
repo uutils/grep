@@ -215,6 +215,10 @@ impl CompiledPattern {
             // GNU grep supports `{,n}` as an alias for `{0,n}`.
             syntax.enable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_INTERVAL_LOW_ABBREV);
         }
+        if config.regex_mode == RegexMode::Basic {
+            // GNU grep treats \` and \' as buffer anchors.
+            syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_GNU_BUF_ANCHOR);
+        }
         if config.regex_mode == RegexMode::Perl {
             // GNU grep supports `(?P<name>...)`.
             // Unfortunately, the onig crate defines the OP2 flag without the
