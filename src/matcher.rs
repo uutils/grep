@@ -10,6 +10,7 @@ use onig::{
     SyntaxOperator,
 };
 use onig_sys::{OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8};
+use std::borrow::Cow;
 use uucore::error::{UResult, USimpleError};
 
 pub struct Matcher<'a> {
@@ -259,6 +260,8 @@ struct CompiledPattern {
 
 impl CompiledPattern {
     fn compile(pattern: &str, config: &Config) -> UResult<Self> {
+        let pattern = normalize_posix_equivalence_classes(pattern, config.regex_mode);
+        let pattern = pattern.as_ref();
         let mut syntax = *match config.regex_mode {
             RegexMode::Fixed => Syntax::asis(),
             RegexMode::Basic => Syntax::grep(),
@@ -342,6 +345,144 @@ impl CompiledPattern {
             )
             .is_some()
     }
+}
+
+fn normalize_posix_equivalence_classes(pattern: &str, regex_mode: RegexMode) -> Cow<'_, str> {
+    if !matches!(regex_mode, RegexMode::Basic | RegexMode::Extended) || !pattern.contains("[=") {
+        return Cow::Borrowed(pattern);
+    }
+
+    let mut normalized = String::with_capacity(pattern.len());
+    let mut changed = false;
+    let mut i = 0;
+    while i < pattern.len() {
+        let Some((ch, next)) = next_char(pattern, i) else {
+            break;
+        };
+
+        if ch == '\\' {
+            normalized.push(ch);
+            i = next;
+            if let Some((escaped, escaped_next)) = next_char(pattern, i) {
+                normalized.push(escaped);
+                i = escaped_next;
+            }
+            continue;
+        }
+
+        if ch == '['
+            && let Some((class, next, class_changed)) = normalize_bracket_class(pattern, i)
+        {
+            normalized.push_str(&class);
+            i = next;
+            changed |= class_changed;
+            continue;
+        }
+
+        normalized.push(ch);
+        i = next;
+    }
+
+    if changed {
+        Cow::Owned(normalized)
+    } else {
+        Cow::Borrowed(pattern)
+    }
+}
+
+// uu_grep does not implement locale collation yet, so single-character POSIX
+// equivalence classes can only be made C-locale-compatible here. Multi-character
+// collating elements are left for the regex engine to handle as before.
+fn normalize_bracket_class(pattern: &str, start: usize) -> Option<(String, usize, bool)> {
+    let mut class = String::from("[");
+    let mut changed = false;
+    let mut first_item = true;
+    let mut i = start + 1;
+
+    if let Some(('^', next)) = next_char(pattern, i) {
+        class.push('^');
+        i = next;
+    }
+
+    while i < pattern.len() {
+        if let Some((ch, next)) = next_char(pattern, i)
+            && ch == ']'
+            && !first_item
+        {
+            class.push(ch);
+            return Some((class, next, changed));
+        }
+
+        if pattern[i..].starts_with("[=")
+            && let Some((content, next)) = bracket_token_content(pattern, i, '=')
+        {
+            if let Some(ch) = single_char(content) {
+                push_bracket_literal(&mut class, ch);
+                changed = true;
+            } else {
+                class.push_str(&pattern[i..next]);
+            }
+            i = next;
+            first_item = false;
+            continue;
+        }
+
+        if pattern[i..].starts_with("[:")
+            && let Some((_, next)) = bracket_token_content(pattern, i, ':')
+        {
+            class.push_str(&pattern[i..next]);
+            i = next;
+            first_item = false;
+            continue;
+        }
+
+        if pattern[i..].starts_with("[.")
+            && let Some((_, next)) = bracket_token_content(pattern, i, '.')
+        {
+            class.push_str(&pattern[i..next]);
+            i = next;
+            first_item = false;
+            continue;
+        }
+
+        let (ch, next) = next_char(pattern, i)?;
+        class.push(ch);
+        i = next;
+        first_item = false;
+    }
+
+    None
+}
+
+fn bracket_token_content(pattern: &str, start: usize, delimiter: char) -> Option<(&str, usize)> {
+    let content_start = start + 2;
+    let mut i = content_start;
+    while i < pattern.len() {
+        let (ch, next) = next_char(pattern, i)?;
+        if ch == delimiter && pattern[next..].starts_with(']') {
+            return Some((&pattern[content_start..i], next + 1));
+        }
+        i = next;
+    }
+    None
+}
+
+fn single_char(value: &str) -> Option<char> {
+    let mut chars = value.chars();
+    let ch = chars.next()?;
+    chars.next().is_none().then_some(ch)
+}
+
+fn push_bracket_literal(class: &mut String, ch: char) {
+    if matches!(ch, '\\' | ']' | '-' | '^') {
+        class.push('\\');
+    }
+    class.push(ch);
+}
+
+fn next_char(value: &str, index: usize) -> Option<(char, usize)> {
+    let ch = value[index..].chars().next()?;
+    Some((ch, index + ch.len_utf8()))
 }
 
 #[cfg(test)]

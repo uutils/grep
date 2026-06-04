@@ -86,6 +86,39 @@ fn bre_gnu_extensions() {
 }
 
 #[test]
+fn posix_equivalence_classes_in_brackets() {
+    let (_s, mut c) = ucmd();
+    c.args(&["[[=a=]]"])
+        .pipe_in("a\nb\n")
+        .succeeds()
+        .stdout_only("a\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["[[=a=]b]"])
+        .pipe_in("a\nb\nc\n")
+        .succeeds()
+        .stdout_only("a\nb\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["[[:alpha:]][[=1=]]"])
+        .pipe_in("a1\na2\n11\n")
+        .succeeds()
+        .stdout_only("a1\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", "[[=a=]]"])
+        .pipe_in("a\nb\n")
+        .succeeds()
+        .stdout_only("a\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-F", "[[=a=]]"])
+        .pipe_in("[[=a=]]\na\n")
+        .succeeds()
+        .stdout_only("[[=a=]]\n");
+}
+
+#[test]
 fn ere_metacharacters() {
     let cases: &[(&[&str], &str, &str)] = &[
         (&["-E", "Hi|HI"], "Hi\nHI\nhi\n", "Hi\nHI\n"),
