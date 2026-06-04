@@ -70,6 +70,28 @@ fn bre_gnu_extensions() {
         .succeeds()
         .stdout_only("contain\n");
 
+    let (_s, mut c) = ucmd();
+    c.args(&[r"\s"])
+        .pipe_in("a b\nxy\n\tindented\n")
+        .succeeds()
+        .stdout_only("a b\n\tindented\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&[r"\S"])
+        .pipe_in("aS b\n  \nx\n")
+        .succeeds()
+        .stdout_only("aS b\nx\n");
+
+    let (scene, _) = ucmd();
+    scene.fixtures.write_bytes("invalid-utf8", b"\x82\n");
+    for pattern in [r"^\s$", r"^\S$"] {
+        let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+        c.args(&[pattern, "invalid-utf8"])
+            .fails_with_code(1)
+            .no_stdout()
+            .no_stderr();
+    }
+
     // BRE backreference: repeated adjacent word.
     let (_s, mut c) = ucmd();
     c.args(&[r"\(\b\w\+\b\) \1"])

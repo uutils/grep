@@ -201,10 +201,13 @@ struct CompiledPattern {
     /// entire haystack to find the longest. This makes it unsuitable for searching,
     /// but it's perfect for a second, anchored match pass for POSIX semantics.
     longest_anchored: Regex,
+    reject_invalid_utf8_matches: bool,
 }
 
 impl CompiledPattern {
     fn compile(pattern: &str, config: &Config) -> UResult<Self> {
+        let bre_whitespace_escape =
+            config.regex_mode == RegexMode::Basic && has_bre_whitespace_escape(pattern);
         let mut syntax = *match config.regex_mode {
             RegexMode::Fixed => Syntax::asis(),
             RegexMode::Basic => Syntax::grep(),
@@ -214,6 +217,10 @@ impl CompiledPattern {
         if config.regex_mode != RegexMode::Fixed {
             // GNU grep supports `{,n}` as an alias for `{0,n}`.
             syntax.enable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_INTERVAL_LOW_ABBREV);
+        }
+        if bre_whitespace_escape {
+            // GNU grep treats `\s`/`\S` as whitespace shorthands in BRE mode.
+            syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_S_WHITE_SPACE);
         }
         if config.regex_mode == RegexMode::Perl {
             // GNU grep supports `(?P<name>...)`.
@@ -247,20 +254,28 @@ impl CompiledPattern {
         Ok(Self {
             leftmost,
             longest_anchored,
+            reject_invalid_utf8_matches: bre_whitespace_escape,
         })
     }
 
     /// Find the leftmost match starting at or after `offset`.
-    fn search_leftmost(&self, line: &[u8], offset: usize) -> Option<(usize, usize)> {
-        let mut region = Region::new();
-        self.leftmost.search_with_encoding(
-            EncodedBytes::from_parts(line, &raw mut OnigEncodingUTF8),
-            offset,
-            line.len(),
-            SearchOptions::SEARCH_OPTION_NONE,
-            Some(&mut region),
-        )?;
-        region.pos(0)
+    fn search_leftmost(&self, line: &[u8], mut offset: usize) -> Option<(usize, usize)> {
+        while offset <= line.len() {
+            let mut region = Region::new();
+            self.leftmost.search_with_encoding(
+                EncodedBytes::from_parts(line, &raw mut OnigEncodingUTF8),
+                offset,
+                line.len(),
+                SearchOptions::SEARCH_OPTION_NONE,
+                Some(&mut region),
+            )?;
+            let (start, end) = region.pos(0)?;
+            if self.accepts_match(line, start, end) {
+                return Some((start, end));
+            }
+            offset = end.max(start + 1);
+        }
+        None
     }
 
     /// Given a known leftmost start `start`, return the longest extent
@@ -273,11 +288,18 @@ impl CompiledPattern {
             SearchOptions::SEARCH_OPTION_NONE,
             Some(&mut region),
         );
-        region.pos(0).map(|(_, end)| end)
+        region
+            .pos(0)
+            .filter(|&(start, end)| self.accepts_match(line, start, end))
+            .map(|(_, end)| end)
     }
 
     /// True if any match exists in `line` (including zero-length).
     fn is_match(&self, line: &[u8]) -> bool {
+        if self.reject_invalid_utf8_matches {
+            return self.search_leftmost(line, 0).is_some();
+        }
+
         self.leftmost
             .search_with_encoding(
                 EncodedBytes::from_parts(line, &raw mut OnigEncodingUTF8),
@@ -288,4 +310,24 @@ impl CompiledPattern {
             )
             .is_some()
     }
+
+    fn accepts_match(&self, line: &[u8], start: usize, end: usize) -> bool {
+        !self.reject_invalid_utf8_matches || std::str::from_utf8(&line[start..end]).is_ok()
+    }
+}
+
+fn has_bre_whitespace_escape(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        if matches!(bytes[i + 1], b's' | b'S') {
+            return true;
+        }
+        i += 2;
+    }
+    false
 }
