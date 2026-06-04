@@ -171,6 +171,23 @@ fn pcre_features() {
 }
 
 #[test]
+fn pcre_rejects_multiple_patterns() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", "-e", "a", "-e", "b"])
+        .pipe_in("abc\n")
+        .fails_with_code(2)
+        .stderr_contains("the -P option only supports a single pattern")
+        .no_stdout();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", "-e", "a\nb"])
+        .pipe_in("abc\n")
+        .fails_with_code(2)
+        .stderr_contains("the -P option only supports a single pattern")
+        .no_stdout();
+}
+
+#[test]
 fn posix_character_classes() {
     let (_s, mut c) = ucmd();
     c.args(&["-E", "[[:digit:]]+"])
