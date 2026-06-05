@@ -283,7 +283,9 @@ impl<'a> Searcher<'a> {
 
             if let Some(positions) = self.session_match_line(line) {
                 // TODO: GNU grep respects LANG. Here, I'm always checking for valid UTF-8.
-                if !self.session_mark_binary_if(|| std::str::from_utf8(line).is_err()) {
+                if self.config.binary_mode != BinaryMode::WithoutMatch
+                    && !self.session_mark_binary_if(|| std::str::from_utf8(line).is_err())
+                {
                     return Ok(false);
                 }
 

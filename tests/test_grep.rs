@@ -881,6 +881,7 @@ fn binary_files_text_forces_text_mode() {
 fn binary_files_without_match_skips() {
     let (scene, _) = ucmd();
     scene.fixtures.write_bytes("b", b"hit\0more\n");
+    scene.fixtures.write_bytes("invalid", b"a\x9db\n");
 
     let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
     c.args(&["-I", "hit", "b"]).fails_with_code(1).no_output();
@@ -889,6 +890,18 @@ fn binary_files_without_match_skips() {
     c.args(&["--binary-files=without-match", "hit", "b"])
         .fails_with_code(1)
         .no_output();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-I", "a", "invalid"])
+        .succeeds()
+        .stdout_is_bytes(b"a\x9db\n")
+        .no_stderr();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["--binary-files=without-match", "a", "invalid"])
+        .succeeds()
+        .stdout_is_bytes(b"a\x9db\n")
+        .no_stderr();
 }
 
 fn build_tree(scene: &TestScenario) {
