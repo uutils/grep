@@ -549,6 +549,20 @@ fn quiet_modes() {
         .pipe_in("a\n")
         .fails_with_code(1)
         .no_output();
+
+    // Quiet mode suppresses EOF bookkeeping output from -c and -L even when
+    // the no-match path reaches finalization.
+    let (_s, mut c) = ucmd();
+    c.args(&["-q", "-c", "z"])
+        .pipe_in("a\n")
+        .fails_with_code(1)
+        .no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-q", "-L", "z"])
+        .pipe_in("a\n")
+        .fails_with_code(1)
+        .no_output();
 }
 
 #[test]
