@@ -11,6 +11,7 @@ use onig::{
 };
 use onig_sys::{OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8};
 use uucore::error::{UResult, USimpleError};
+use uucore::show_warning;
 
 pub struct Matcher<'a> {
     config: &'a Config<'a>,
@@ -273,6 +274,18 @@ impl CompiledPattern {
             // GNU grep supports \` and \' as buffer anchors in BRE and ERE.
             syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_GNU_BUF_ANCHOR);
         }
+
+        let mut normalized_pattern = None;
+        let pattern = if config.regex_mode == RegexMode::Extended {
+            if let Some((op, rest)) = strip_leading_repeat_operator(pattern) {
+                show_warning!("{op} at start of expression");
+                normalized_pattern = Some(rest.to_string());
+            }
+            normalized_pattern.as_deref().unwrap_or(pattern)
+        } else {
+            pattern
+        };
+
         if config.regex_mode == RegexMode::Perl {
             // GNU grep supports `(?P<name>...)`.
             // Unfortunately, the onig crate defines the OP2 flag without the
@@ -352,6 +365,25 @@ impl CompiledPattern {
             )
             .is_some()
     }
+}
+
+fn strip_leading_repeat_operator(pattern: &str) -> Option<(&'static str, &str)> {
+    match pattern.as_bytes().first()? {
+        b'?' => Some(("?", &pattern[1..])),
+        b'*' => Some(("*", &pattern[1..])),
+        b'+' => Some(("+", &pattern[1..])),
+        b'{' => strip_leading_interval_repeat(pattern).map(|rest| ("{...}", rest)),
+        _ => None,
+    }
+}
+
+fn strip_leading_interval_repeat(pattern: &str) -> Option<&str> {
+    let close = pattern.as_bytes().iter().position(|&b| b == b'}')?;
+    let body = &pattern[1..close];
+    let is_interval = !body.is_empty()
+        && body.bytes().all(|b| b.is_ascii_digit() || b == b',')
+        && body.bytes().any(|b| b.is_ascii_digit());
+    is_interval.then_some(&pattern[close + 1..])
 }
 
 #[cfg(test)]

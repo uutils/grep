@@ -160,6 +160,32 @@ fn initial_tab_skips_empty_lines() {
 }
 
 #[test]
+fn ere_leading_repeat_operators_warn_and_match_empty() {
+    let cases = [
+        ("?", "warning: ? at start of expression"),
+        ("*", "warning: * at start of expression"),
+        ("+", "warning: + at start of expression"),
+        ("{2}", "warning: {...} at start of expression"),
+        ("{,2}", "warning: {...} at start of expression"),
+    ];
+
+    for (pattern, warning) in cases {
+        let (_s, mut c) = ucmd();
+        c.args(&["-E", "-e", pattern])
+            .pipe_in("abc\n")
+            .succeeds()
+            .stdout_is("abc\n")
+            .stderr_contains(warning);
+    }
+
+    let (_s, mut c) = ucmd();
+    c.args(&["*foo"])
+        .pipe_in("*foo\nfoo\n")
+        .succeeds()
+        .stdout_only("*foo\n");
+}
+
+#[test]
 fn fixed_string_is_literal() {
     // Metacharacters are not interpreted.
     let (_s, mut c) = ucmd();
