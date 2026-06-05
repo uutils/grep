@@ -209,8 +209,6 @@ struct Cursor<'a> {
 
 impl Cursor<'_> {
     fn refill(&mut self) {
-        // Searching at EOF is still meaningful for zero-width patterns such as
-        // `$` and `x*`. After emitting one, `offset` is nudged past EOF below.
         if self.offset > self.line.len() {
             self.pending = None;
             return;
