@@ -375,6 +375,27 @@ fn empty_pattern_matches_every_line() {
 }
 
 #[test]
+fn inverted_empty_pattern_short_circuits() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "", "-v", "-c"])
+        .pipe_in("a\nb\n")
+        .fails_with_code(1)
+        .no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "", "-v", "-c", "missing"])
+        .fails_with_code(1)
+        .no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "", "-e", "[", "-v"])
+        .pipe_in("a\n")
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_contains("invalid pattern");
+}
+
+#[test]
 fn pattern_starting_with_dash_needs_double_dash() {
     let (_s, mut c) = ucmd();
     c.args(&["--", "-foo-"])
