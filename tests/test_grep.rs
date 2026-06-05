@@ -166,6 +166,41 @@ fn fixed_string_is_literal() {
 }
 
 #[test]
+fn conflicting_matcher_flags_are_rejected() {
+    let cases: &[&[&str]] = &[
+        &["-e", ".", "-F", "-G"],
+        &["-e", ".", "-F", "-E"],
+        &["-e", ".", "-E", "-G"],
+        &["-e", ".", "-G", "-E"],
+        &["-e", ".", "-P", "-F"],
+        &["-e", ".", "-P", "-E"],
+        &["-e", ".", "-P", "-G"],
+        &["-e", ".", "-G", "-F", "-E"],
+        &["-e", ".", "--fixed-strings", "--basic-regexp"],
+    ];
+
+    for args in cases {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .fails_with_code(2)
+            .stderr_contains("conflicting matchers specified")
+            .no_stdout();
+    }
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", ".", "-F", "-F"])
+        .pipe_in("abc\n")
+        .fails_with_code(1)
+        .no_stdout();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", ".", "-E", "-E"])
+        .pipe_in("abc\n")
+        .succeeds()
+        .stdout_only("abc\n");
+}
+
+#[test]
 fn pcre_features() {
     let (_s, mut c) = ucmd();
     c.args(&["-P", r"\d+"])
@@ -197,14 +232,12 @@ fn perl_regexp_rejects_multiple_patterns() {
     // Two separate -e flags.
     let (_s, mut c) = ucmd();
     c.args(&["-P", "-e", "foo", "-e", "bar"])
-        .pipe_in("foo\nbar\n")
         .fails_with_code(2)
         .stderr_contains("the -P option only supports a single pattern");
 
     // A newline inside the pattern string is split into multiple patterns.
     let (_s, mut c) = ucmd();
     c.args(&["-P", "-e", "foo\nbar"])
-        .pipe_in("foo\nbar\n")
         .fails_with_code(2)
         .stderr_contains("the -P option only supports a single pattern");
 

@@ -140,6 +140,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         .map_or(Default::default(), |v| v.collect());
     let extended_regexp = matches.get_flag("extended_regexp");
     let fixed_strings = matches.get_flag("fixed_strings");
+    let basic_regexp = matches.get_flag("basic_regexp");
     let perl_regexp = matches.get_flag("perl_regexp");
     let regexp = matches.get_many::<String>("regexp").unwrap_or_default();
     let file_pattern = matches
@@ -196,6 +197,17 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         .map_or("", |s| s.as_str());
     #[cfg(windows)]
     let binary = matches.get_flag("binary");
+
+    let matcher_mode_count = [extended_regexp, fixed_strings, basic_regexp, perl_regexp]
+        .into_iter()
+        .filter(|matched| *matched)
+        .count();
+    if matcher_mode_count > 1 {
+        return Err(USimpleError::new(
+            2,
+            "conflicting matchers specified".to_string(),
+        ));
+    }
 
     // With -e/-f given, ALL positionals are files.
     let has_explicit_patterns = regexp.len() != 0 || file_pattern.len() != 0;
@@ -461,32 +473,28 @@ pub fn uu_app() -> Command {
                 .short('E')
                 .long("extended-regexp")
                 .help("PATTERNS are extended regular expressions")
-                .action(ArgAction::SetTrue)
-                .overrides_with_all(["basic_regexp", "fixed_strings", "perl_regexp"]),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("fixed_strings")
                 .short('F')
                 .long("fixed-strings")
                 .help("PATTERNS are strings")
-                .action(ArgAction::SetTrue)
-                .overrides_with_all(["basic_regexp", "extended_regexp", "perl_regexp"]),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("basic_regexp")
                 .short('G')
                 .long("basic-regexp")
                 .help("PATTERNS are basic regular expressions")
-                .action(ArgAction::SetTrue)
-                .overrides_with_all(["extended_regexp", "fixed_strings", "perl_regexp"]),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("perl_regexp")
                 .short('P')
                 .long("perl-regexp")
                 .help("PATTERNS are Perl regular expressions")
-                .action(ArgAction::SetTrue)
-                .overrides_with_all(["basic_regexp", "extended_regexp", "fixed_strings"]),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("regexp")
