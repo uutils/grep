@@ -587,6 +587,23 @@ fn only_matching() {
         .succeeds()
         .stdout_only("Hello\nhELLO\nHELLO\n");
 
+    // Zero-width matches do not print in -o mode, but still mark the line as
+    // matched. This matters for -v because matched lines must not be selected.
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "$"]).pipe_in("\n").succeeds().no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "-v", "$"])
+        .pipe_in("a\n\nb\n")
+        .fails_with_code(1)
+        .no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "-v", "x*"])
+        .pipe_in("a\n\nb\n")
+        .fails_with_code(1)
+        .no_output();
+
     // After a match ends, ^ must not re-match at that position.
     let (_s, mut c) = ucmd();
     c.args(&["-o", "^hello*"])
