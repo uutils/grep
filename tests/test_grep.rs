@@ -39,7 +39,7 @@ fn bre_default_metacharacters() {
 
 #[test]
 fn bre_gnu_extensions() {
-    // \+ \? \| \{m,n\} \< \> \b \w plus backreferences and leading `*`.
+    // \+ \? \| \{m,n\} \< \> \b \w \s \S plus backreferences and leading `*`.
     let (_s, mut c) = ucmd();
     c.args(&[r"o\+"])
         .pipe_in("o\noo\nx\n")
@@ -69,6 +69,18 @@ fn bre_gnu_extensions() {
         .pipe_in("contain\ncontainer\ncontained\n")
         .succeeds()
         .stdout_only("contain\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&[r"\s"])
+        .pipe_in("a b\nxy\n")
+        .succeeds()
+        .stdout_only("a b\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-c", r"\S"])
+        .pipe_in("aS b\n  \nx\n")
+        .succeeds()
+        .stdout_only("2\n");
 
     // BRE backreference: repeated adjacent word.
     let (_s, mut c) = ucmd();
