@@ -265,6 +265,12 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     } else {
         RegexMode::Basic
     };
+    if regex_mode == RegexMode::Perl && patterns.len() > 1 {
+        return Err(USimpleError::new(
+            2,
+            "the -P option only supports a single pattern".to_string(),
+        ));
+    }
     let directory_mode = if recursive || dereference_recursive {
         DirectoryMode::Recurse
     } else {
