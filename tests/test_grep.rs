@@ -735,6 +735,15 @@ fn group_separator_behavior() {
 }
 
 #[test]
+fn adjacent_context_groups_do_not_get_separator() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", ".", "-B", "2"])
+        .pipe_in("a\nb\n\n\nc\n")
+        .succeeds()
+        .stdout_only("a\nb\n\n\nc\n");
+}
+
+#[test]
 fn overlapping_context_not_duplicated() {
     let (_s, mut c) = ucmd();
     c.args(&["-n", "-C", "1", "-E", "b|d"])

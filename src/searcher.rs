@@ -407,21 +407,33 @@ impl<'a> Searcher<'a> {
         path: &Path,
         view: &LineView<'_>,
     ) -> io::Result<()> {
+        let last_printed_line = self.session_last_printed_line;
+        let mut context = self.session_context_buf.drain_iter().peekable();
+
+        while context
+            .peek()
+            .is_some_and(|ctx| ctx.line_number <= last_printed_line)
+        {
+            context.next();
+        }
+
+        let group_start_line = context
+            .peek()
+            .map_or(view.line_number, |ctx| ctx.line_number);
+
         // Group separator between non-adjacent groups.
         // `last_printed_line == 0` means we haven't printed anything yet.
         //   = first group = skip the separator
         if self.config.has_context
-            && self.session_last_printed_line > 0
-            && view.line_number > self.session_last_printed_line + 1
+            && last_printed_line > 0
+            && group_start_line > last_printed_line + 1
         {
             self.writer.write_group_separator()?;
         }
 
-        for ctx in self.session_context_buf.drain_iter() {
-            if ctx.line_number > self.session_last_printed_line {
-                self.writer.write_line(&ctx.view(), path)?;
-                self.session_last_printed_line = ctx.line_number;
-            }
+        for ctx in context {
+            self.writer.write_line(&ctx.view(), path)?;
+            self.session_last_printed_line = ctx.line_number;
         }
 
         self.writer.write_line(view, path)?;
