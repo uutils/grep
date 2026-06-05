@@ -101,6 +101,27 @@ fn gnu_buffer_anchors() {
 }
 
 #[test]
+fn bre_whitespace_shorthands() {
+    let (_s, mut c) = ucmd();
+    c.args(&[r"\s"])
+        .pipe_in("a b\nxy\n")
+        .succeeds()
+        .stdout_only("a b\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-c", r"\S"])
+        .pipe_in("aS b\n  \nx\n")
+        .succeeds()
+        .stdout_only("2\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&[r"\s\+"])
+        .pipe_in("a  b\nxy\n")
+        .succeeds()
+        .stdout_only("a  b\n");
+}
+
+#[test]
 fn ere_metacharacters() {
     let cases: &[(&[&str], &str, &str)] = &[
         (&["-E", "Hi|HI"], "Hi\nHI\nhi\n", "Hi\nHI\n"),

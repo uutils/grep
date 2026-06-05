@@ -273,6 +273,12 @@ impl CompiledPattern {
             // GNU grep supports \` and \' as buffer anchors in BRE and ERE.
             syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_GNU_BUF_ANCHOR);
         }
+        if config.regex_mode == RegexMode::Basic {
+            // GNU grep accepts \s and \S as whitespace shorthands in BRE.
+            // Follow Oniguruma's operator directly here; remaining invalid
+            // UTF-8 differences are engine semantics, not local syntax gaps.
+            syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_S_WHITE_SPACE);
+        }
         if config.regex_mode == RegexMode::Perl {
             // GNU grep supports `(?P<name>...)`.
             // Unfortunately, the onig crate defines the OP2 flag without the
