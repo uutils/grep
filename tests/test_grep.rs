@@ -275,6 +275,21 @@ fn ignore_case_and_override() {
 }
 
 #[test]
+fn ignore_case_does_not_expand_single_atom_to_multiple_chars() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "-i", "[[:alpha:]]"])
+        .pipe_in("st\nss\nffi\n")
+        .succeeds()
+        .stdout_only("s\nt\ns\ns\nf\nf\ni\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "-i", "ß"])
+        .pipe_in("SS\n")
+        .fails_with_code(1)
+        .no_output();
+}
+
+#[test]
 fn invert_match() {
     let (_s, mut c) = ucmd();
     c.args(&["-v", "foo"])

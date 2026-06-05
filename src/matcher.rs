@@ -5,12 +5,13 @@
 
 use crate::{Config, RegexMode};
 use memchr::memmem;
-use onig::{
-    EncodedBytes, Regex, RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior,
-    SyntaxOperator,
-};
+use onig::{RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior, SyntaxOperator};
 use onig_sys::{OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8};
+use std::ptr::{null, null_mut};
+use std::sync::Mutex;
 use uucore::error::{UResult, USimpleError};
+
+static ONIG_NEW_MUTEX: Mutex<()> = Mutex::new(());
 
 pub struct Matcher<'a> {
     config: &'a Config<'a>,
@@ -250,11 +251,11 @@ fn plain_literal(pattern: &str, ignore_case: bool, mode: RegexMode) -> Option<Ve
 
 struct CompiledPattern {
     /// Default semantics. It's decently fast and used for searching.
-    leftmost: Regex,
+    leftmost: OnigRegex,
     /// Compiled with `FIND_LONGEST`. If used for a search, it'll search the
     /// entire haystack to find the longest. This makes it unsuitable for searching,
     /// but it's perfect for a second, anchored match pass for POSIX semantics.
-    longest_anchored: Regex,
+    longest_anchored: OnigRegex,
 }
 
 impl CompiledPattern {
@@ -286,8 +287,12 @@ impl CompiledPattern {
             options |= RegexOptions::REGEX_OPTION_IGNORECASE;
         }
 
-        fn compile_with(pattern: &str, syntax: &Syntax, options: RegexOptions) -> UResult<Regex> {
-            Regex::with_options_and_encoding(pattern, options, syntax).map_err(|err| {
+        fn compile_with(
+            pattern: &str,
+            syntax: &Syntax,
+            options: RegexOptions,
+        ) -> UResult<OnigRegex> {
+            OnigRegex::compile(pattern, syntax, options).map_err(|err| {
                 USimpleError::new(2, format!("invalid pattern \"{pattern}\": {err}"))
             })
         }
@@ -307,13 +312,7 @@ impl CompiledPattern {
     /// Find the leftmost match starting at or after `offset`.
     fn search_leftmost(&self, line: &[u8], offset: usize) -> Option<(usize, usize)> {
         let mut region = Region::new();
-        self.leftmost.search_with_encoding(
-            EncodedBytes::from_parts(line, &raw mut OnigEncodingUTF8),
-            offset,
-            line.len(),
-            SearchOptions::SEARCH_OPTION_NONE,
-            Some(&mut region),
-        )?;
+        self.leftmost.search(line, offset, Some(&mut region))?;
         region.pos(0)
     }
 
@@ -321,27 +320,144 @@ impl CompiledPattern {
     /// of a match anchored exactly there = POSIX leftmost-longest end.
     fn longest_end_at(&self, line: &[u8], start: usize) -> Option<usize> {
         let mut region = Region::new();
-        self.longest_anchored.match_with_encoding(
-            EncodedBytes::from_parts(line, &raw mut OnigEncodingUTF8),
-            start,
-            SearchOptions::SEARCH_OPTION_NONE,
-            Some(&mut region),
-        );
+        self.longest_anchored
+            .match_at(line, start, Some(&mut region));
         region.pos(0).map(|(_, end)| end)
     }
 
     /// True if any match exists in `line` (including zero-length).
     fn is_match(&self, line: &[u8]) -> bool {
-        self.leftmost
-            .search_with_encoding(
-                EncodedBytes::from_parts(line, &raw mut OnigEncodingUTF8),
-                0,
-                line.len(),
-                SearchOptions::SEARCH_OPTION_NONE,
-                None,
-            )
-            .is_some()
+        self.leftmost.search(line, 0, None).is_some()
     }
+}
+
+struct OnigRegex {
+    raw: onig_sys::OnigRegex,
+}
+
+// SAFETY: Oniguruma compiled regexes are immutable after construction, and this
+// wrapper owns and frees the raw pointer exactly once. This mirrors `onig::Regex`.
+unsafe impl Send for OnigRegex {}
+// SAFETY: Searches only read the compiled regex. Capture storage is caller-owned
+// through `Region`, so sharing the compiled regex across threads is safe.
+unsafe impl Sync for OnigRegex {}
+
+impl OnigRegex {
+    fn compile(pattern: &str, syntax: &Syntax, options: RegexOptions) -> Result<Self, String> {
+        let pattern = pattern.as_bytes();
+        let mut raw = null_mut();
+        let mut error = onig_sys::OnigErrorInfo {
+            enc: null_mut(),
+            par: null_mut(),
+            par_end: null_mut(),
+        };
+        // SAFETY: This reads Oniguruma's process default case-folding bitset.
+        let mut case_fold_flag = unsafe { onig_sys::onig_get_default_case_fold_flag() };
+        if options.contains(RegexOptions::REGEX_OPTION_IGNORECASE) {
+            case_fold_flag &= !onig_sys::INTERNAL_ONIGENC_CASE_FOLD_MULTI_CHAR;
+        }
+
+        let mut compile_info = onig_sys::OnigCompileInfo {
+            num_of_elements: 5,
+            pattern_enc: &raw mut OnigEncodingUTF8,
+            target_enc: &raw mut OnigEncodingUTF8,
+            syntax: syntax as *const Syntax as *mut Syntax as *mut onig_sys::OnigSyntaxType,
+            option: options.bits(),
+            case_fold_flag,
+        };
+
+        let _guard = ONIG_NEW_MUTEX.lock().unwrap();
+        // SAFETY: `pattern` supplies a valid start/end pointer pair for the
+        // duration of the call, and `compile_info` uses Oniguruma's built-in
+        // UTF-8 encoding plus a syntax value borrowed from the safe wrapper.
+        let result = unsafe {
+            onig_sys::onig_new_deluxe(
+                &mut raw,
+                pattern.as_ptr(),
+                pattern.as_ptr().add(pattern.len()),
+                &mut compile_info,
+                &mut error,
+            )
+        };
+        if result == onig_sys::ONIG_NORMAL as i32 {
+            Ok(Self { raw })
+        } else {
+            Err(onig_error_message(result, &error))
+        }
+    }
+
+    fn search(&self, line: &[u8], offset: usize, region: Option<&mut Region>) -> Option<usize> {
+        debug_assert!(offset <= line.len());
+        // SAFETY: `offset` is bounded by `line.len()`, all byte pointers are
+        // derived from `line`, and `region_ptr` preserves `onig::Region`'s
+        // transparent representation over `OnigRegion`.
+        let result = unsafe {
+            let start = line.as_ptr().add(offset);
+            let end = line.as_ptr().add(line.len());
+            onig_sys::onig_search(
+                self.raw,
+                line.as_ptr(),
+                end,
+                start,
+                end,
+                region_ptr(region),
+                SearchOptions::SEARCH_OPTION_NONE.bits(),
+            )
+        };
+        onig_match_result(result)
+    }
+
+    fn match_at(&self, line: &[u8], offset: usize, region: Option<&mut Region>) -> Option<usize> {
+        debug_assert!(offset <= line.len());
+        // SAFETY: `offset` is bounded by `line.len()`, all byte pointers are
+        // derived from `line`, and `region_ptr` preserves `onig::Region`'s
+        // transparent representation over `OnigRegion`.
+        let result = unsafe {
+            let at = line.as_ptr().add(offset);
+            onig_sys::onig_match(
+                self.raw,
+                line.as_ptr(),
+                line.as_ptr().add(line.len()),
+                at,
+                region_ptr(region),
+                SearchOptions::SEARCH_OPTION_NONE.bits(),
+            )
+        };
+        onig_match_result(result)
+    }
+}
+
+impl Drop for OnigRegex {
+    fn drop(&mut self) {
+        // SAFETY: `raw` was returned by a successful `onig_new_deluxe` call and
+        // is owned by this wrapper.
+        unsafe { onig_sys::onig_free(self.raw) }
+    }
+}
+
+fn region_ptr(region: Option<&mut Region>) -> *mut onig_sys::OnigRegion {
+    region.map_or(null_mut(), |r| {
+        r as *mut Region as *mut onig_sys::OnigRegion
+    })
+}
+
+fn onig_match_result(result: i32) -> Option<usize> {
+    if result >= 0 {
+        Some(result as usize)
+    } else if result == onig_sys::ONIG_MISMATCH {
+        None
+    } else {
+        panic!(
+            "Onig: Regex match error: {}",
+            onig_error_message(result, null())
+        );
+    }
+}
+
+fn onig_error_message(code: i32, info: *const onig_sys::OnigErrorInfo) -> String {
+    let mut buff = [0; onig_sys::ONIG_MAX_ERROR_MESSAGE_LEN as usize];
+    let len = unsafe { onig_sys::onig_error_code_to_str(buff.as_mut_ptr(), code, info) };
+    String::from_utf8_lossy(&buff[..len as usize]).into_owned()
 }
 
 #[cfg(test)]
