@@ -285,6 +285,12 @@ impl CompiledPattern {
         if config.ignore_case {
             options |= RegexOptions::REGEX_OPTION_IGNORECASE;
         }
+        // In GNU grep's Basic/Extended modes, `-z` makes newline ordinary data
+        // for `.`, but PCRE keeps its existing non-DOTALL behavior. The GNU
+        // `pcre-context` test documents this as current behavior until PCRE2.
+        if config.null_data && matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended) {
+            options |= RegexOptions::REGEX_OPTION_MULTILINE;
+        }
 
         fn compile_with(pattern: &str, syntax: &Syntax, options: RegexOptions) -> UResult<Regex> {
             Regex::with_options_and_encoding(pattern, options, syntax).map_err(|err| {

@@ -1251,6 +1251,27 @@ fn null_data_mode_records() {
         .succeeds()
         .stdout_is_bytes(b"hello\0");
 
+    // With NUL-delimited records, newline is ordinary data and `.` matches it.
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-o", "."])
+        .pipe_in(&b"a\nb"[..])
+        .succeeds()
+        .stdout_is_bytes(b"a\0\n\0b\0");
+
+    // GNU grep's PCRE path currently does not let `.*` consume the extra
+    // newline here under -z; this mirrors the GNU pcre-context test.
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", "-z", "-o", r"(?<=\n\n\n).*"])
+        .pipe_in(
+            &b"NUL preceded by 0 empty lines.\0\
+              \nNUL preceded by 1 empty line.\0\
+              \n\nNUL preceded by 2 empty lines.\0\
+              \n\n\nNUL preceded by 3 empty lines.\0\
+              \n\n\n\nNUL preceded by 4 empty lines.\0\n"[..],
+        )
+        .succeeds()
+        .stdout_is_bytes(b"NUL preceded by 3 empty lines.\0NUL preceded by 4 empty lines.\0");
+
     // Counting works under -z.
     let (_s, mut c) = ucmd();
     c.args(&["-z", "-c", "hello"])
