@@ -278,6 +278,21 @@ fn max_count() {
         .fails_with_code(1)
         .no_stdout();
 
+    let (_s, mut c) = ucmd();
+    c.args(&["-m", "0", "a", "missing"])
+        .fails_with_code(1)
+        .no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-m", "1", "a", "missing"])
+        .fails_with_code(2)
+        .stderr_contains("grep: missing:");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-m", "0", "-e", "["])
+        .fails_with_code(2)
+        .stderr_contains("invalid pattern");
+
     // -A trailing context still printed after the cutoff.
     let (_s, mut c) = ucmd();
     c.args(&["-m", "1", "-A", "2", "match"])

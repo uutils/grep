@@ -20,7 +20,7 @@ use clap::{Arg, ArgAction, Command};
 use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal as _, Read};
 use std::path::Path;
-use uucore::error::{FromIo, UResult, USimpleError};
+use uucore::error::{ExitCode, FromIo, UResult, USimpleError};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
@@ -399,6 +399,10 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     };
 
     let matcher = Matcher::compile(&config)?;
+    if config.max_count == Some(0) {
+        return Err(ExitCode::new(1));
+    }
+
     let writer = OutputWriter::new(&config);
     let mut searcher = Searcher::new(&config, matcher, writer);
     let mut lb = LineBuffer::new(if config.null_data { b'\0' } else { b'\n' });
