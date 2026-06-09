@@ -11,12 +11,11 @@ use rand::RngExt;
 use rand::prelude::IndexedRandom;
 use rustix::io::dup;
 use rustix::io::read;
-use rustix::pipe::pipe;
 use rustix::stdio::{dup2_stderr, dup2_stdin, dup2_stdout};
 use std::env::temp_dir;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{pipe, Seek, SeekFrom, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::sync::{Once, atomic::AtomicBool};
@@ -92,26 +91,8 @@ where
     };
 
     println!("Running test {:?}", &args[0..]);
-    let (read_pipe_stdout, write_pipe_stdout) = match pipe() {
-        Ok(fds) => fds,
-        Err(_) => {
-            return CommandResult {
-                stdout: "".to_string(),
-                stderr: "Failed to create pipes".to_string(),
-                exit_code: -1,
-            };
-        }
-    };
-    let (read_pipe_stderr, write_pipe_stderr) = match pipe() {
-        Ok(fds) => fds,
-        Err(_) => {
-            return CommandResult {
-                stdout: "".to_string(),
-                stderr: "Failed to create pipes".to_string(),
-                exit_code: -1,
-            };
-        }
-    };
+    let (read_pipe_stdout, write_pipe_stdout) = pipe().expect("Failed to create pipes");
+    let (read_pipe_stderr, write_pipe_stderr) = pipe().expect("Failed to create pipes");
 
     // Redirect stdout and stderr to their respective pipes
     if dup2_stdout(&write_pipe_stdout).is_err() || dup2_stderr(&write_pipe_stderr).is_err() {
