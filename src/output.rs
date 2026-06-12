@@ -203,7 +203,8 @@ impl<'a> OutputWriter<'a> {
     pub fn report_io_error(&self, label: &OsStr, err: &io::Error) {
         if !self.config.no_messages && !self.config.quiet {
             // Strip the trailing " (os error XX)" so the message matches GNU grep.
-            eprintln!(
+            let _ = writeln!(
+                io::stderr(),
                 "grep: {label}: {err}",
                 label = label.to_string_lossy(),
                 err = strip_errno(err)
@@ -213,7 +214,11 @@ impl<'a> OutputWriter<'a> {
 
     /// Write the "binary file matches" message to stderr.
     pub fn report_binary_match(&self, path: &Path) {
-        eprintln!("grep: {}: binary file matches", path.display());
+        let _ = writeln!(
+            io::stderr(),
+            "grep: {}: binary file matches",
+            path.display()
+        );
     }
 
     /// Write the group separator between context groups.
