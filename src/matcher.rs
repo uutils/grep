@@ -5,10 +5,12 @@
 
 use crate::{Config, RegexMode};
 use memchr::memmem;
+#[cfg(not(all(target_family = "wasm", target_os = "wasi")))]
 use onig::{
     EncodedBytes, Regex, RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior,
     SyntaxOperator,
 };
+#[cfg(not(all(target_family = "wasm", target_os = "wasi")))]
 use onig_sys::{OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8};
 use uucore::error::{UResult, USimpleError};
 
@@ -111,6 +113,7 @@ impl<'a> Matcher<'a> {
     /// Word-boundary check `-w`.
     /// NOTE that `-w` does not check both sides, unlike `\b` in a regex.
     /// Start/End-of-line count as non-words.
+    #[cfg(not(all(target_family = "wasm", target_os = "wasi")))]
     fn is_word_match(line: &[u8], start: usize, end: usize) -> bool {
         // SAFETY: This code uses OnigEncodingType such that it can support other types of encodings in the future.
         unsafe {
@@ -136,6 +139,23 @@ impl<'a> Matcher<'a> {
 
             true
         }
+    }
+
+    /// WASI builds do not link Oniguruma, so this is only a conservative ASCII
+    /// fallback for literal-only matches.
+    #[cfg(all(target_family = "wasm", target_os = "wasi"))]
+    fn is_word_match(line: &[u8], start: usize, end: usize) -> bool {
+        fn is_ascii_word(byte: u8) -> bool {
+            byte.is_ascii_alphanumeric() || byte == b'_'
+        }
+
+        if end < line.len() && is_ascii_word(line[end]) {
+            return false;
+        }
+        if start > 0 && is_ascii_word(line[start - 1]) {
+            return false;
+        }
+        true
     }
 }
 
@@ -248,6 +268,7 @@ fn plain_literal(pattern: &str, ignore_case: bool, mode: RegexMode) -> Option<Ve
     plain.then(|| pattern.as_bytes().to_vec())
 }
 
+#[cfg(not(all(target_family = "wasm", target_os = "wasi")))]
 struct CompiledPattern {
     /// Default semantics. It's decently fast and used for searching.
     leftmost: Regex,
@@ -257,6 +278,7 @@ struct CompiledPattern {
     longest_anchored: Regex,
 }
 
+#[cfg(not(all(target_family = "wasm", target_os = "wasi")))]
 impl CompiledPattern {
     fn compile(pattern: &str, config: &Config) -> UResult<Self> {
         let mut syntax = *match config.regex_mode {
@@ -351,6 +373,47 @@ impl CompiledPattern {
                 None,
             )
             .is_some()
+    }
+}
+
+#[cfg(all(target_family = "wasm", target_os = "wasi"))]
+struct CompiledPattern {
+    needle: Vec<u8>,
+    finder: memmem::Finder<'static>,
+}
+
+#[cfg(all(target_family = "wasm", target_os = "wasi"))]
+impl CompiledPattern {
+    fn compile(pattern: &str, config: &Config) -> UResult<Self> {
+        let Some(needle) = plain_literal(pattern, config.ignore_case, config.regex_mode) else {
+            return Err(USimpleError::new(
+                2,
+                "wasm32-wasip1 builds support ASCII literal patterns only; full regex matching requires Oniguruma and a C WASI sysroot".to_string(),
+            ));
+        };
+        let finder = memmem::Finder::new(&needle).into_owned();
+        Ok(Self { needle, finder })
+    }
+
+    /// Find the leftmost match starting at or after `offset`.
+    fn search_leftmost(&self, line: &[u8], offset: usize) -> Option<(usize, usize)> {
+        self.finder.find(&line[offset..]).map(|relative| {
+            let start = offset + relative;
+            (start, start + self.needle.len())
+        })
+    }
+
+    /// Given a known leftmost start `start`, return the longest extent
+    /// of a match anchored exactly there.
+    fn longest_end_at(&self, line: &[u8], start: usize) -> Option<usize> {
+        line.get(start..start + self.needle.len())
+            .is_some_and(|bytes| bytes == self.needle.as_slice())
+            .then_some(start + self.needle.len())
+    }
+
+    /// True if any match exists in `line`.
+    fn is_match(&self, line: &[u8]) -> bool {
+        self.finder.find(line).is_some()
     }
 }
 
