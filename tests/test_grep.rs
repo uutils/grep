@@ -992,6 +992,41 @@ fn color_never_emits_no_escapes() {
 }
 
 #[test]
+fn grep_colors_mt_sets_match_color() {
+    // `mt` in GREP_COLORS sets the matched-text color (equivalent to ms + mc).
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLORS", "mt=36")
+        .args(&["--color=always", "foo"])
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_contains("\x1b[36m\x1b[Kfoo\x1b[m\x1b[K");
+}
+
+#[test]
+fn grep_color_env_is_deprecated_with_warning() {
+    // GREP_COLOR still selects the match color but, when color is active, emits
+    // GNU's deprecation warning pointing at GREP_COLORS 'mt'.
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLOR", "36")
+        .args(&["--color=always", "foo"])
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_contains("\x1b[36m\x1b[Kfoo\x1b[m\x1b[K")
+        .stderr_contains("warning: GREP_COLOR='36' is deprecated; use GREP_COLORS='mt=36'");
+}
+
+#[test]
+fn grep_color_env_no_warning_without_color() {
+    // Without active color output, GREP_COLOR must not trigger the warning.
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLOR", "36")
+        .args(&["--color=never", "foo"])
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_only("foo\n");
+}
+
+#[test]
 fn color_line_number_uses_green() {
     let (_s, mut c) = ucmd();
     c.args(&["--color=always", "-n", "foo"])

@@ -21,6 +21,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal as _, Read};
 use std::path::Path;
 use uucore::error::{ExitCode, FromIo, UResult, USimpleError};
+use uucore::show_warning;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[doc(hidden)]
@@ -372,6 +373,11 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         ColorMode::Never => false,
         ColorMode::Auto => std::io::stdout().is_terminal(),
     };
+    // GNU grep treats GREP_COLOR as deprecated: when it is set and color output
+    // is active, warn and point users at the GREP_COLORS 'mt' capability.
+    if use_color && !grep_color.is_empty() {
+        show_warning!("GREP_COLOR='{grep_color}' is deprecated; use GREP_COLORS='mt={grep_color}'");
+    }
     let color_config = ColorConfig::from_env(&grep_color, &grep_colors);
 
     let config = Config {
@@ -956,6 +962,11 @@ impl<'a> ColorConfig<'a> {
         for item in grep_colors.split(':') {
             if let Some((key, value)) = item.split_once('=') {
                 match key {
+                    // `mt` sets matched text in any line; equivalent to ms + mc.
+                    "mt" => {
+                        config.matched_selected = value;
+                        config.matched_context = value;
+                    }
                     "ms" => config.matched_selected = value,
                     "mc" => config.matched_context = value,
                     "fn" => config.filename = value,
