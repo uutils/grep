@@ -86,6 +86,21 @@ fn bre_gnu_extensions() {
 }
 
 #[test]
+fn gnu_buffer_anchors() {
+    let (_s, mut c) = ucmd();
+    c.args(&[r"\`c\|r\'"])
+        .pipe_in("cat\nscat\ntar\ndog\n")
+        .succeeds()
+        .stdout_only("cat\ntar\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", r"\`c|r\'"])
+        .pipe_in("cat\nscat\ntar\ndog\n")
+        .succeeds()
+        .stdout_only("cat\ntar\n");
+}
+
+#[test]
 fn ere_metacharacters() {
     let cases: &[(&[&str], &str, &str)] = &[
         (&["-E", "Hi|HI"], "Hi\nHI\nhi\n", "Hi\nHI\n"),
@@ -127,6 +142,28 @@ fn ere_invalid_pattern_is_error() {
 }
 
 #[test]
+fn quiet_match_overrides_file_error() {
+    // With -q, a match makes grep exit 0 even if an earlier file could not be
+    // opened. Without -q the missing file still yields exit 2, and -q with no
+    // match keeps the error status.
+    let (_s, mut c) = ucmd();
+    c.args(&["-q", "abc", "no-such-file", "-"])
+        .pipe_in("abcd\n")
+        .succeeds()
+        .no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["abc", "no-such-file", "-"])
+        .pipe_in("abcd\n")
+        .fails_with_code(2);
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-q", "zzz", "no-such-file", "-"])
+        .pipe_in("abcd\n")
+        .fails_with_code(2);
+}
+
+#[test]
 fn initial_tab_skips_empty_lines() {
     // -T aligns content with a tab, but GNU omits the tab for an empty line
     // (a whitespace-only line still gets one). -H forces the filename prefix
@@ -142,6 +179,32 @@ fn initial_tab_skips_empty_lines() {
     c.args(&["-T", "-H", "^", "in"])
         .succeeds()
         .stdout_is("in:\tx\nin:\t \n");
+}
+
+#[test]
+fn ere_leading_repeat_operators_warn_and_match_empty() {
+    let cases = [
+        ("?", "warning: ? at start of expression"),
+        ("*", "warning: * at start of expression"),
+        ("+", "warning: + at start of expression"),
+        ("{2}", "warning: {...} at start of expression"),
+        ("{,2}", "warning: {...} at start of expression"),
+    ];
+
+    for (pattern, warning) in cases {
+        let (_s, mut c) = ucmd();
+        c.args(&["-E", "-e", pattern])
+            .pipe_in("abc\n")
+            .succeeds()
+            .stdout_is("abc\n")
+            .stderr_contains(warning);
+    }
+
+    let (_s, mut c) = ucmd();
+    c.args(&["*foo"])
+        .pipe_in("*foo\nfoo\n")
+        .succeeds()
+        .stdout_only("*foo\n");
 }
 
 #[test]
@@ -163,6 +226,41 @@ fn fixed_string_is_literal() {
         .pipe_in("hi\nHI\nlo\n")
         .succeeds()
         .stdout_only("hi\nHI\n");
+}
+
+#[test]
+fn conflicting_matcher_flags_are_rejected() {
+    let cases: &[&[&str]] = &[
+        &["-e", ".", "-F", "-G"],
+        &["-e", ".", "-F", "-E"],
+        &["-e", ".", "-E", "-G"],
+        &["-e", ".", "-G", "-E"],
+        &["-e", ".", "-P", "-F"],
+        &["-e", ".", "-P", "-E"],
+        &["-e", ".", "-P", "-G"],
+        &["-e", ".", "-G", "-F", "-E"],
+        &["-e", ".", "--fixed-strings", "--basic-regexp"],
+    ];
+
+    for args in cases {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .fails_with_code(2)
+            .stderr_contains("conflicting matchers specified")
+            .no_stdout();
+    }
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", ".", "-F", "-F"])
+        .pipe_in("abc\n")
+        .fails_with_code(1)
+        .no_stdout();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", ".", "-E", "-E"])
+        .pipe_in("abc\n")
+        .succeeds()
+        .stdout_only("abc\n");
 }
 
 #[test]
@@ -197,14 +295,12 @@ fn perl_regexp_rejects_multiple_patterns() {
     // Two separate -e flags.
     let (_s, mut c) = ucmd();
     c.args(&["-P", "-e", "foo", "-e", "bar"])
-        .pipe_in("foo\nbar\n")
         .fails_with_code(2)
         .stderr_contains("the -P option only supports a single pattern");
 
     // A newline inside the pattern string is split into multiple patterns.
     let (_s, mut c) = ucmd();
     c.args(&["-P", "-e", "foo\nbar"])
-        .pipe_in("foo\nbar\n")
         .fails_with_code(2)
         .stderr_contains("the -P option only supports a single pattern");
 
@@ -448,6 +544,27 @@ fn empty_pattern_matches_every_line() {
 }
 
 #[test]
+fn inverted_empty_pattern_short_circuits() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "", "-v", "-c"])
+        .pipe_in("a\nb\n")
+        .fails_with_code(1)
+        .no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "", "-v", "-c", "missing"])
+        .fails_with_code(1)
+        .no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "", "-e", "[", "-v"])
+        .pipe_in("a\n")
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_contains("invalid pattern");
+}
+
+#[test]
 fn pattern_starting_with_dash_needs_double_dash() {
     let (_s, mut c) = ucmd();
     c.args(&["--", "-foo-"])
@@ -602,6 +719,23 @@ fn only_matching() {
         .succeeds()
         .stdout_only("Hello\nhELLO\nHELLO\n");
 
+    // Zero-width matches do not print in -o mode, but still mark the line as
+    // matched. This matters for -v because matched lines must not be selected.
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "$"]).pipe_in("\n").succeeds().no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "-v", "$"])
+        .pipe_in("a\n\nb\n")
+        .fails_with_code(1)
+        .no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "-v", "x*"])
+        .pipe_in("a\n\nb\n")
+        .fails_with_code(1)
+        .no_output();
+
     // After a match ends, ^ must not re-match at that position.
     let (_s, mut c) = ucmd();
     c.args(&["-o", "^hello*"])
@@ -619,6 +753,20 @@ fn quiet_modes() {
     // No match: exit 1, no output.
     let (_s, mut c) = ucmd();
     c.args(&["-q", "z"])
+        .pipe_in("a\n")
+        .fails_with_code(1)
+        .no_output();
+
+    // Quiet mode suppresses EOF bookkeeping output from -c and -L even when
+    // the no-match path reaches finalization.
+    let (_s, mut c) = ucmd();
+    c.args(&["-q", "-c", "z"])
+        .pipe_in("a\n")
+        .fails_with_code(1)
+        .no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-q", "-L", "z"])
         .pipe_in("a\n")
         .fails_with_code(1)
         .no_output();
@@ -808,6 +956,15 @@ fn group_separator_behavior() {
 }
 
 #[test]
+fn adjacent_context_groups_do_not_get_separator() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", ".", "-B", "2"])
+        .pipe_in("a\nb\n\n\nc\n")
+        .succeeds()
+        .stdout_only("a\nb\n\n\nc\n");
+}
+
+#[test]
 fn overlapping_context_not_duplicated() {
     let (_s, mut c) = ucmd();
     c.args(&["-n", "-C", "1", "-E", "b|d"])
@@ -954,6 +1111,7 @@ fn binary_files_text_forces_text_mode() {
 fn binary_files_without_match_skips() {
     let (scene, _) = ucmd();
     scene.fixtures.write_bytes("b", b"hit\0more\n");
+    scene.fixtures.write_bytes("invalid", b"a\x9db\n");
 
     let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
     c.args(&["-I", "hit", "b"]).fails_with_code(1).no_output();
@@ -962,6 +1120,18 @@ fn binary_files_without_match_skips() {
     c.args(&["--binary-files=without-match", "hit", "b"])
         .fails_with_code(1)
         .no_output();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-I", "a", "invalid"])
+        .succeeds()
+        .stdout_is_bytes(b"a\x9db\n")
+        .no_stderr();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["--binary-files=without-match", "a", "invalid"])
+        .succeeds()
+        .stdout_is_bytes(b"a\x9db\n")
+        .no_stderr();
 }
 
 fn build_tree(scene: &TestScenario) {
@@ -1266,6 +1436,27 @@ fn null_data_mode_records() {
         .succeeds()
         .stdout_is_bytes(b"hello\0");
 
+    // With NUL-delimited records, newline is ordinary data and `.` matches it.
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-o", "."])
+        .pipe_in(&b"a\nb"[..])
+        .succeeds()
+        .stdout_is_bytes(b"a\0\n\0b\0");
+
+    // GNU grep's PCRE path currently does not let `.*` consume the extra
+    // newline here under -z; this mirrors the GNU pcre-context test.
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", "-z", "-o", r"(?<=\n\n\n).*"])
+        .pipe_in(
+            &b"NUL preceded by 0 empty lines.\0\
+              \nNUL preceded by 1 empty line.\0\
+              \n\nNUL preceded by 2 empty lines.\0\
+              \n\n\nNUL preceded by 3 empty lines.\0\
+              \n\n\n\nNUL preceded by 4 empty lines.\0\n"[..],
+        )
+        .succeeds()
+        .stdout_is_bytes(b"NUL preceded by 3 empty lines.\0NUL preceded by 4 empty lines.\0");
+
     // Counting works under -z.
     let (_s, mut c) = ucmd();
     c.args(&["-z", "-c", "hello"])
@@ -1479,13 +1670,6 @@ fn slow_path_binary_handling() {
         .args(&["-a", "[h]it", "nulbin"])
         .succeeds()
         .stdout_is_bytes(b"hit\0\n");
-
-    // --binary-files=without-match bails out on an invalid-UTF-8 match.
-    scene
-        .cmd(env!("CARGO_BIN_EXE_grep"))
-        .args(&["--binary-files=without-match", "[a]", "bad"])
-        .fails_with_code(1)
-        .no_output();
 
     // A NUL after the matched line means binariness is discovered at EOF, so
     // the line is printed first and the notice is emitted during finalization.

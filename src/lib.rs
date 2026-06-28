@@ -20,7 +20,7 @@ use clap::{Arg, ArgAction, Command};
 use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal as _, Read};
 use std::path::Path;
-use uucore::error::{FromIo, UResult, USimpleError};
+use uucore::error::{ExitCode, FromIo, UResult, USimpleError};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[doc(hidden)]
@@ -140,6 +140,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         .map_or(Default::default(), |v| v.collect());
     let extended_regexp = matches.get_flag("extended_regexp");
     let fixed_strings = matches.get_flag("fixed_strings");
+    let basic_regexp = matches.get_flag("basic_regexp");
     let perl_regexp = matches.get_flag("perl_regexp");
     let regexp = matches.get_many::<String>("regexp").unwrap_or_default();
     let file_pattern = matches
@@ -196,6 +197,17 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         .map_or("", |s| s.as_str());
     #[cfg(windows)]
     let binary = matches.get_flag("binary");
+
+    let matcher_mode_count = [extended_regexp, fixed_strings, basic_regexp, perl_regexp]
+        .into_iter()
+        .filter(|matched| *matched)
+        .count();
+    if matcher_mode_count > 1 {
+        return Err(USimpleError::new(
+            2,
+            "conflicting matchers specified".to_string(),
+        ));
+    }
 
     // With -e/-f given, ALL positionals are files.
     let has_explicit_patterns = regexp.len() != 0 || file_pattern.len() != 0;
@@ -407,6 +419,12 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     };
 
     let matcher = Matcher::compile(&config)?;
+    // An empty pattern matches every line; with `-v`, GNU grep selects no lines
+    // and exits as "no match" without reading any input files.
+    if invert_match && patterns.iter().any(|pattern| pattern.is_empty()) {
+        return Err(ExitCode::new(1));
+    }
+
     let writer = OutputWriter::new(&config);
     let mut searcher = Searcher::new(&config, matcher, writer);
     let mut lb = LineBuffer::new(if config.null_data { b'\0' } else { b'\n' });
@@ -461,32 +479,28 @@ pub fn uu_app() -> Command {
                 .short('E')
                 .long("extended-regexp")
                 .help("PATTERNS are extended regular expressions")
-                .action(ArgAction::SetTrue)
-                .overrides_with_all(["basic_regexp", "fixed_strings", "perl_regexp"]),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("fixed_strings")
                 .short('F')
                 .long("fixed-strings")
                 .help("PATTERNS are strings")
-                .action(ArgAction::SetTrue)
-                .overrides_with_all(["basic_regexp", "extended_regexp", "perl_regexp"]),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("basic_regexp")
                 .short('G')
                 .long("basic-regexp")
                 .help("PATTERNS are basic regular expressions")
-                .action(ArgAction::SetTrue)
-                .overrides_with_all(["extended_regexp", "fixed_strings", "perl_regexp"]),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("perl_regexp")
                 .short('P')
                 .long("perl-regexp")
                 .help("PATTERNS are Perl regular expressions")
-                .action(ArgAction::SetTrue)
-                .overrides_with_all(["basic_regexp", "extended_regexp", "fixed_strings"]),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("regexp")

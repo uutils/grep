@@ -118,7 +118,12 @@ impl<'a> Searcher<'a> {
             .flush()
             .map_err_context(|| "(standard output)".to_string())?;
 
-        if self.had_error {
+        // With -q, a match yields exit status 0 even if an error (e.g. a
+        // missing file) occurred earlier: GNU exits as soon as a line is
+        // selected, so the error never affects the status.
+        if self.config.quiet && self.any_match {
+            Ok(())
+        } else if self.had_error {
             Err(ExitCode::new(2))
         } else if self.any_match {
             Ok(())
@@ -493,7 +498,9 @@ impl<'a> Searcher<'a> {
 
             if let Some(positions) = self.session_match_line(line) {
                 // TODO: GNU grep respects LANG. Here, I'm always checking for valid UTF-8.
-                if !self.session_mark_binary_if(|| std::str::from_utf8(line).is_err()) {
+                if self.config.binary_mode != BinaryMode::WithoutMatch
+                    && !self.session_mark_binary_if(|| std::str::from_utf8(line).is_err())
+                {
                     return Ok(false);
                 }
 
@@ -617,21 +624,33 @@ impl<'a> Searcher<'a> {
         path: &Path,
         view: &LineView<'_>,
     ) -> io::Result<()> {
+        let last_printed_line = self.session_last_printed_line;
+        let mut context = self.session_context_buf.drain_iter().peekable();
+
+        while context
+            .peek()
+            .is_some_and(|ctx| ctx.line_number <= last_printed_line)
+        {
+            context.next();
+        }
+
+        let group_start_line = context
+            .peek()
+            .map_or(view.line_number, |ctx| ctx.line_number);
+
         // Group separator between non-adjacent groups.
         // `last_printed_line == 0` means we haven't printed anything yet.
         //   = first group = skip the separator
         if self.config.has_context
-            && self.session_last_printed_line > 0
-            && view.line_number > self.session_last_printed_line + 1
+            && last_printed_line > 0
+            && group_start_line > last_printed_line + 1
         {
             self.writer.write_group_separator()?;
         }
 
-        for ctx in self.session_context_buf.drain_iter() {
-            if ctx.line_number > self.session_last_printed_line {
-                self.writer.write_line(&ctx.view(), path)?;
-                self.session_last_printed_line = ctx.line_number;
-            }
+        for ctx in context {
+            self.writer.write_line(&ctx.view(), path)?;
+            self.session_last_printed_line = ctx.line_number;
         }
 
         self.writer.write_line(view, path)?;
@@ -641,15 +660,19 @@ impl<'a> Searcher<'a> {
 
     /// End-of-file bookkeeping: count / `-L` / binary notice.
     fn session_finalize(&mut self, path: &Path) -> io::Result<bool> {
-        if self.config.count && !self.config.files_with_matches && !self.config.files_without_match
-        {
-            self.writer.write_count(self.session_match_count, path)?;
-        }
-        if self.config.files_without_match && !self.session_any_match() {
-            self.writer.write_filename(path)?;
-        }
-        if self.session_should_emit_binary_notice() {
-            self.writer.report_binary_match(path);
+        if !self.config.quiet {
+            if self.config.count
+                && !self.config.files_with_matches
+                && !self.config.files_without_match
+            {
+                self.writer.write_count(self.session_match_count, path)?;
+            }
+            if self.config.files_without_match && !self.session_any_match() {
+                self.writer.write_filename(path)?;
+            }
+            if self.session_should_emit_binary_notice() {
+                self.writer.report_binary_match(path);
+            }
         }
         Ok(self.session_any_match())
     }

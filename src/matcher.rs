@@ -10,6 +10,7 @@ use onig_sys::{OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8};
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
 use uucore::error::{UResult, USimpleError};
+use uucore::show_warning;
 
 static ONIG_NEW_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -270,6 +271,22 @@ impl CompiledPattern {
             // GNU grep supports `{,n}` as an alias for `{0,n}`.
             syntax.enable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_INTERVAL_LOW_ABBREV);
         }
+        if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended) {
+            // GNU grep supports \` and \' as buffer anchors in BRE and ERE.
+            syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_GNU_BUF_ANCHOR);
+        }
+
+        let mut normalized_pattern = None;
+        let pattern = if config.regex_mode == RegexMode::Extended {
+            if let Some((op, rest)) = strip_leading_repeat_operator(pattern) {
+                show_warning!("{op} at start of expression");
+                normalized_pattern = Some(rest.to_string());
+            }
+            normalized_pattern.as_deref().unwrap_or(pattern)
+        } else {
+            pattern
+        };
+
         if config.regex_mode == RegexMode::Perl {
             // GNU grep supports `(?P<name>...)`.
             // Unfortunately, the onig crate defines the OP2 flag without the
@@ -285,6 +302,12 @@ impl CompiledPattern {
         let mut options = RegexOptions::REGEX_OPTION_NONE;
         if config.ignore_case {
             options |= RegexOptions::REGEX_OPTION_IGNORECASE;
+        }
+        // In GNU grep's Basic/Extended modes, `-z` makes newline ordinary data
+        // for `.`, but PCRE keeps its existing non-DOTALL behavior. The GNU
+        // `pcre-context` test documents this as current behavior until PCRE2.
+        if config.null_data && matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended) {
+            options |= RegexOptions::REGEX_OPTION_MULTILINE;
         }
 
         fn compile_with(
@@ -458,6 +481,25 @@ fn onig_error_message(code: i32, info: *const onig_sys::OnigErrorInfo) -> String
     let mut buff = [0; onig_sys::ONIG_MAX_ERROR_MESSAGE_LEN as usize];
     let len = unsafe { onig_sys::onig_error_code_to_str(buff.as_mut_ptr(), code, info) };
     String::from_utf8_lossy(&buff[..len as usize]).into_owned()
+}
+
+fn strip_leading_repeat_operator(pattern: &str) -> Option<(&'static str, &str)> {
+    match pattern.as_bytes().first()? {
+        b'?' => Some(("?", &pattern[1..])),
+        b'*' => Some(("*", &pattern[1..])),
+        b'+' => Some(("+", &pattern[1..])),
+        b'{' => strip_leading_interval_repeat(pattern).map(|rest| ("{...}", rest)),
+        _ => None,
+    }
+}
+
+fn strip_leading_interval_repeat(pattern: &str) -> Option<&str> {
+    let close = pattern.as_bytes().iter().position(|&b| b == b'}')?;
+    let body = &pattern[1..close];
+    let is_interval = !body.is_empty()
+        && body.bytes().all(|b| b.is_ascii_digit() || b == b',')
+        && body.bytes().any(|b| b.is_ascii_digit());
+    is_interval.then_some(&pattern[close + 1..])
 }
 
 #[cfg(test)]
