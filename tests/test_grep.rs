@@ -910,6 +910,45 @@ fn after_before_combined_context() {
 }
 
 #[test]
+fn before_context_count_is_exact_not_rounded() {
+    // `-B N` must retain exactly N preceding lines. The ring buffer rounds its
+    // slot count up to a power of two, so a non-power-of-two N (3, 5, 6, 7) must
+    // not leak extra context lines.
+    let input = "01\n02\n03\n04\n05\n06\n07\n08\n09\n10\nMM\n";
+
+    let expected = [
+        ("0", "MM\n"),
+        ("1", "10\nMM\n"),
+        ("2", "09\n10\nMM\n"),
+        ("3", "08\n09\n10\nMM\n"),
+        ("4", "07\n08\n09\n10\nMM\n"),
+        ("5", "06\n07\n08\n09\n10\nMM\n"),
+        ("6", "05\n06\n07\n08\n09\n10\nMM\n"),
+        ("7", "04\n05\n06\n07\n08\n09\n10\nMM\n"),
+    ];
+    for (n, want) in expected {
+        let (_s, mut c) = ucmd();
+        c.args(&["-B", n, "MM"])
+            .pipe_in(input)
+            .succeeds()
+            .stdout_only(want);
+    }
+
+    // A count larger than the available lines just caps at what is there.
+    let (_s, mut c) = ucmd();
+    c.args(&["-B", "1000000", "MM"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only(input);
+
+    // Non-numeric, negative, and fractional counts are rejected with exit code 2.
+    for bad in ["abc", "-1", "2.5"] {
+        let (_s, mut c) = ucmd();
+        c.args(&["-B", bad, "MM"]).pipe_in(input).fails_with_code(2);
+    }
+}
+
+#[test]
 fn num_shorthand_is_context() {
     // `-2` is shorthand for `-C 2`.
     let (_s, mut c) = ucmd();
