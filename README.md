@@ -17,6 +17,17 @@ This project is an initial release and may contain bugs.
 cargo install uu_grep
 ```
 
+## 🚀 Try it online
+
+You can try `grep` directly in your browser on the [uutils playground](https://uutils.github.io/playground/).
+Arguments (and a full command) can be passed through the URL via the `cmd` query parameter, for example:
+
+```shell
+printf '🚀 rocket\n🛰️ satellite\n🌙 moon\n⭐ star\n' | grep 🌙
+```
+
+[Run it in the playground](https://uutils.github.io/playground/?cmd=printf%20%27%F0%9F%9A%80%20rocket%5Cn%F0%9F%9B%B0%EF%B8%8F%20satellite%5Cn%F0%9F%8C%99%20moon%5Cn%E2%AD%90%20star%5Cn%27%20%7C%20grep%20%F0%9F%8C%99)
+
 ## Building
 
 Download Rust at: https://rustup.rs/

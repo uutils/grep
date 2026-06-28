@@ -1,0 +1,162 @@
+name: Fuzzing
+
+# spell-checker:ignore (people) taiki-e
+# spell-checker:ignore (misc) fuzzer uufuzz
+
+env:
+  CARGO_INCREMENTAL: "0"
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+permissions:
+  contents: read # to fetch code (actions/checkout)
+
+# End the current execution if there is a new changeset in the PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  uufuzz-examples:
+    name: Build and test uufuzz examples
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Build uufuzz library
+      run: |
+        cd fuzz/uufuzz
+        cargo build --release
+    - name: Run uufuzz tests
+      run: |
+        cd fuzz/uufuzz
+        cargo test --lib
+    - name: Build and run uufuzz examples
+      run: |
+        cd fuzz/uufuzz
+        echo "Building all examples..."
+        cargo build --examples --release
+
+        # Run all examples except integration_testing (which has FD issues in CI)
+        for example in examples/*.rs; do
+          example_name=$(basename "$example" .rs)
+          if [ "$example_name" != "integration_testing" ]; then
+            cargo run --example "$example_name" --release
+          fi
+        done
+
+  fuzz-build:
+    name: Build the fuzzers
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Install `cargo-fuzz`
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-fuzz
+    - name: Emulate a nightly toolchain
+      run: |
+        echo "RUSTC_BOOTSTRAP=1" >> "${GITHUB_ENV}"
+    - name: Run `cargo-fuzz build`
+      # Force the correct target
+      # https://github.com/rust-fuzz/cargo-fuzz/issues/398
+      run: cargo fuzz build --target $(rustc --print host-tuple)
+
+  fuzz-run:
+    needs: fuzz-build
+    name: Fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RUN_FOR: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        test-target:
+          # fuzz_grep is a differential fuzzer against GNU grep; it currently
+          # surfaces compatibility differences, so it is not expected to pass yet.
+          - { name: fuzz_grep, should_pass: false }
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Install `cargo-fuzz`
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-fuzz
+    - name: Emulate a nightly toolchain
+      run: |
+        echo "RUSTC_BOOTSTRAP=1" >> "${GITHUB_ENV}"
+    - name: Run ${{ matrix.test-target.name }} for ${{ env.RUN_FOR }} seconds
+      id: run_fuzzer
+      shell: bash
+      continue-on-error: ${{ !matrix.test-target.should_pass }}
+      run: |
+        mkdir -p fuzz/stats
+        STATS_FILE="fuzz/stats/${{ matrix.test-target.name }}.txt"
+        # Force the correct target
+        # https://github.com/rust-fuzz/cargo-fuzz/issues/398
+        cargo fuzz run --target $(rustc --print host-tuple) ${{ matrix.test-target.name }} -- -max_total_time=${{ env.RUN_FOR }} -timeout=${{ env.RUN_FOR }} -detect_leaks=0 -print_final_stats=1 2>&1 | tee "$STATS_FILE"
+
+        # Save should_pass value for later inspection
+        echo "${{ matrix.test-target.should_pass }}" > "fuzz/stats/${{ matrix.test-target.name }}.should_pass"
+
+        # Print stats to job output for immediate visibility
+        echo "----------------------------------------"
+        echo "FUZZING STATISTICS FOR ${{ matrix.test-target.name }}"
+        echo "----------------------------------------"
+        echo "Runs:           $(grep -q "stat::number_of_executed_units" "$STATS_FILE" && grep "stat::number_of_executed_units" "$STATS_FILE" | awk '{print $2}' || echo "unknown")"
+        echo "Execution Rate: $(grep -q "stat::average_exec_per_sec" "$STATS_FILE" && grep "stat::average_exec_per_sec" "$STATS_FILE" | awk '{print $2}' || echo "unknown") execs/sec"
+        echo "New Units:      $(grep -q "stat::new_units_added" "$STATS_FILE" && grep "stat::new_units_added" "$STATS_FILE" | awk '{print $2}' || echo "unknown")"
+        echo "Expected:       ${{ matrix.test-target.should_pass }}"
+        if grep -q "SUMMARY: " "$STATS_FILE"; then
+          echo "Status:         $(grep "SUMMARY: " "$STATS_FILE" | head -1)"
+        else
+          echo "Status:         Completed"
+        fi
+        echo "----------------------------------------"
+
+        # Add summary to GitHub step summary
+        echo "### Fuzzing Results for ${{ matrix.test-target.name }}" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
+        echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+        if grep -q "stat::number_of_executed_units" "$STATS_FILE"; then
+          echo "| Runs | $(grep "stat::number_of_executed_units" "$STATS_FILE" | awk '{print $2}') |" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        if grep -q "stat::average_exec_per_sec" "$STATS_FILE"; then
+          echo "| Execution Rate | $(grep "stat::average_exec_per_sec" "$STATS_FILE" | awk '{print $2}') execs/sec |" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        if grep -q "stat::new_units_added" "$STATS_FILE"; then
+          echo "| New Units | $(grep "stat::new_units_added" "$STATS_FILE" | awk '{print $2}') |" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        echo "| Should pass | ${{ matrix.test-target.should_pass }} |" >> "$GITHUB_STEP_SUMMARY"
+        if grep -q "SUMMARY: " "$STATS_FILE"; then
+          echo "| Status | $(grep "SUMMARY: " "$STATS_FILE" | head -1) |" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "| Status | Completed |" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+    - name: Upload Stats
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: fuzz-stats-${{ matrix.test-target.name }}
+        path: |
+          fuzz/stats/${{ matrix.test-target.name }}.txt
+          fuzz/stats/${{ matrix.test-target.name }}.should_pass
+        retention-days: 5

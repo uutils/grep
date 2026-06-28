@@ -4,16 +4,24 @@
 // file that was distributed with this source code.
 
 use crate::{Config, RegexMode};
+use memchr::memmem;
 use onig::{
     EncodedBytes, Regex, RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior,
     SyntaxOperator,
 };
 use onig_sys::{OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8};
 use uucore::error::{UResult, USimpleError};
+use uucore::show_warning;
 
 pub struct Matcher<'a> {
     config: &'a Config<'a>,
     patterns: Vec<CompiledPattern>,
+    /// One substring searcher per pattern, present only when *every* pattern is
+    /// a plain literal that a raw byte search resolves exactly (see
+    /// [`plain_literal`]). When set, a caller can decide a line matches by
+    /// looking for any of these needles, bypassing the regex engine entirely.
+    /// `None` as soon as a single pattern needs real regex evaluation.
+    literal_searchers: Option<Vec<memmem::Finder<'static>>>,
 }
 
 impl<'a> Matcher<'a> {
@@ -22,19 +30,41 @@ impl<'a> Matcher<'a> {
         for raw in config.patterns {
             patterns.push(CompiledPattern::compile(raw, config)?);
         }
-        Ok(Self { config, patterns })
+
+        // If we can reduce the whole pattern set to literal needles, keep a
+        // searcher for each so the driver can take a bulk substring-scan path.
+        let needles: Option<Vec<Vec<u8>>> = config
+            .patterns
+            .iter()
+            .map(|p| plain_literal(p, config.ignore_case, config.regex_mode))
+            .collect();
+        let literal_searchers = needles.filter(|n| !n.is_empty()).map(|n| {
+            n.iter()
+                .map(|w| memmem::Finder::new(w).into_owned())
+                .collect()
+        });
+
+        Ok(Self {
+            config,
+            patterns,
+            literal_searchers,
+        })
+    }
+
+    /// Per-pattern substring searchers, present only when the pattern set is a
+    /// pure set of literals (no regex needed). Used by the searcher to scan a
+    /// whole buffer at once instead of testing line by line.
+    pub fn literal_searchers(&self) -> Option<&[memmem::Finder<'static>]> {
+        self.literal_searchers.as_deref()
     }
 
     /// Decide whether `line` matches and return the positions to highlight.
     pub fn match_line(&self, line: &[u8]) -> Option<Vec<(usize, usize)>> {
         let mut any_seen = false;
+        let mut any_selected = false;
         let positions: Vec<_> = MatchIter::new(&self.patterns, line)
             .filter(|&(start, end)| {
                 any_seen = true;
-                // Drop zero-length matches from the output.
-                if start == end {
-                    return false;
-                }
                 // Drop matches that don't span the whole line if `-x` was requested.
                 if self.config.line_regexp && !(start == 0 && end == line.len()) {
                     return false;
@@ -43,13 +73,19 @@ impl<'a> Matcher<'a> {
                 if self.config.word_regexp && !Self::is_word_match(line, start, end) {
                     return false;
                 }
+                any_selected = true;
+                // Drop zero-length matches from the output.
+                if start == end {
+                    return false;
+                }
                 true
             })
             .collect();
 
         let raw_matched = if self.config.line_regexp || self.config.word_regexp {
-            // -w / -x are authoritative once positions are filtered.
-            !positions.is_empty()
+            // -w / -x are authoritative once matches are filtered. Zero-length
+            // matches can select a line even though there is no span to output.
+            any_selected
         } else {
             any_seen
         };
@@ -174,7 +210,7 @@ struct Cursor<'a> {
 
 impl Cursor<'_> {
     fn refill(&mut self) {
-        if self.offset >= self.line.len() {
+        if self.offset > self.line.len() {
             self.pending = None;
             return;
         }
@@ -192,6 +228,25 @@ impl Cursor<'_> {
         self.offset = end.max(start + 1);
         self.pending = Some((start, end));
     }
+}
+
+/// Return the literal bytes of `pattern` when a raw byte-for-byte substring
+/// search is *exactly* equivalent to matching it, otherwise `None`.
+///
+/// We accept only ASCII, case-sensitive needles. That keeps the byte search in
+/// agreement with the regex engine on every possible input, including bytes that
+/// are not valid UTF-8: an ASCII byte can never be part of a multi-byte sequence,
+/// so its presence is unambiguous. In the regex modes we also require that no
+/// byte could ever act as a metacharacter; under `-F` the text is literal as-is.
+fn plain_literal(pattern: &str, ignore_case: bool, mode: RegexMode) -> Option<Vec<u8>> {
+    if ignore_case || pattern.is_empty() || !pattern.is_ascii() {
+        return None;
+    }
+    // Every byte that carries special meaning in any of our regex syntaxes.
+    // A needle without these reads the same as a literal in Basic/Extended/Perl.
+    const SPECIAL: &[u8] = b".*[]^$\\+?{}()|";
+    let plain = mode == RegexMode::Fixed || !pattern.bytes().any(|b| SPECIAL.contains(&b));
+    plain.then(|| pattern.as_bytes().to_vec())
 }
 
 struct CompiledPattern {
@@ -215,6 +270,22 @@ impl CompiledPattern {
             // GNU grep supports `{,n}` as an alias for `{0,n}`.
             syntax.enable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_INTERVAL_LOW_ABBREV);
         }
+        if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended) {
+            // GNU grep supports \` and \' as buffer anchors in BRE and ERE.
+            syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_GNU_BUF_ANCHOR);
+        }
+
+        let mut normalized_pattern = None;
+        let pattern = if config.regex_mode == RegexMode::Extended {
+            if let Some((op, rest)) = strip_leading_repeat_operator(pattern) {
+                show_warning!("{op} at start of expression");
+                normalized_pattern = Some(rest.to_string());
+            }
+            normalized_pattern.as_deref().unwrap_or(pattern)
+        } else {
+            pattern
+        };
+
         if config.regex_mode == RegexMode::Perl {
             // GNU grep supports `(?P<name>...)`.
             // Unfortunately, the onig crate defines the OP2 flag without the
@@ -230,6 +301,12 @@ impl CompiledPattern {
         let mut options = RegexOptions::REGEX_OPTION_NONE;
         if config.ignore_case {
             options |= RegexOptions::REGEX_OPTION_IGNORECASE;
+        }
+        // In GNU grep's Basic/Extended modes, `-z` makes newline ordinary data
+        // for `.`, but PCRE keeps its existing non-DOTALL behavior. The GNU
+        // `pcre-context` test documents this as current behavior until PCRE2.
+        if config.null_data && matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended) {
+            options |= RegexOptions::REGEX_OPTION_MULTILINE;
         }
 
         fn compile_with(pattern: &str, syntax: &Syntax, options: RegexOptions) -> UResult<Regex> {
@@ -287,5 +364,70 @@ impl CompiledPattern {
                 None,
             )
             .is_some()
+    }
+}
+
+fn strip_leading_repeat_operator(pattern: &str) -> Option<(&'static str, &str)> {
+    match pattern.as_bytes().first()? {
+        b'?' => Some(("?", &pattern[1..])),
+        b'*' => Some(("*", &pattern[1..])),
+        b'+' => Some(("+", &pattern[1..])),
+        b'{' => strip_leading_interval_repeat(pattern).map(|rest| ("{...}", rest)),
+        _ => None,
+    }
+}
+
+fn strip_leading_interval_repeat(pattern: &str) -> Option<&str> {
+    let close = pattern.as_bytes().iter().position(|&b| b == b'}')?;
+    let body = &pattern[1..close];
+    let is_interval = !body.is_empty()
+        && body.bytes().all(|b| b.is_ascii_digit() || b == b',')
+        && body.bytes().any(|b| b.is_ascii_digit());
+    is_interval.then_some(&pattern[close + 1..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plain_literal;
+    use crate::RegexMode;
+
+    fn lit(p: &str, ic: bool, mode: RegexMode) -> Option<Vec<u8>> {
+        plain_literal(p, ic, mode)
+    }
+
+    #[test]
+    fn fixed_mode_takes_any_ascii_verbatim() {
+        // Under -F every byte is literal, even regex metacharacters.
+        assert_eq!(lit("abc", false, RegexMode::Fixed), Some(b"abc".to_vec()));
+        assert_eq!(lit("a.*b", false, RegexMode::Fixed), Some(b"a.*b".to_vec()));
+        assert_eq!(lit("a+b", false, RegexMode::Fixed), Some(b"a+b".to_vec()));
+    }
+
+    #[test]
+    fn regex_modes_accept_metacharacter_free_literals() {
+        for mode in [RegexMode::Basic, RegexMode::Extended, RegexMode::Perl] {
+            assert_eq!(lit("ing", false, mode), Some(b"ing".to_vec()));
+            assert_eq!(lit("Hello123", false, mode), Some(b"Hello123".to_vec()));
+        }
+    }
+
+    #[test]
+    fn regex_modes_reject_anything_with_a_metacharacter() {
+        for mode in [RegexMode::Basic, RegexMode::Extended, RegexMode::Perl] {
+            for p in [
+                "a.b", "a*", "[ab]", "^a", "a$", "a\\b", "a+", "a?", "(a)", "a|b", "a{2}",
+            ] {
+                assert_eq!(lit(p, false, mode), None, "pattern {p:?} in {mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_empty_case_insensitive_and_non_ascii() {
+        assert_eq!(lit("", false, RegexMode::Fixed), None);
+        assert_eq!(lit("abc", true, RegexMode::Fixed), None); // -i
+        assert_eq!(lit("abc", true, RegexMode::Basic), None);
+        assert_eq!(lit("café", false, RegexMode::Fixed), None); // non-ASCII
+        assert_eq!(lit("naïve", false, RegexMode::Basic), None);
     }
 }

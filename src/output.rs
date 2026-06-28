@@ -71,6 +71,7 @@ impl<'a> OutputWriter<'a> {
                 view.line_number,
                 view.byte_offset + start as u64,
                 b':',
+                false,
             )?;
 
             self.write_colored_bytes(
@@ -90,6 +91,7 @@ impl<'a> OutputWriter<'a> {
             view.line_number,
             view.byte_offset,
             if view.is_match { b':' } else { b'-' },
+            view.line.is_empty(),
         )?;
 
         let mut last_end = 0;
@@ -125,6 +127,7 @@ impl<'a> OutputWriter<'a> {
         line_number: u64,
         byte_offset: u64,
         sep_char: u8,
+        content_empty: bool,
     ) -> io::Result<()> {
         if self.config.show_filename {
             self.write_colored_fmt(
@@ -155,7 +158,10 @@ impl<'a> OutputWriter<'a> {
             self.write_separator(sep_char)?;
         }
 
+        // GNU grep aligns content with a tab under -T, but only when there is
+        // content to align: an empty line keeps just its prefix (no tab).
         if self.config.initial_tab
+            && !content_empty
             && (self.config.line_number || self.config.byte_offset || self.config.show_filename)
         {
             self.out.write_all(b"\t")?;
@@ -197,7 +203,8 @@ impl<'a> OutputWriter<'a> {
     pub fn report_io_error(&self, label: &OsStr, err: &io::Error) {
         if !self.config.no_messages && !self.config.quiet {
             // Strip the trailing " (os error XX)" so the message matches GNU grep.
-            eprintln!(
+            let _ = writeln!(
+                io::stderr(),
                 "grep: {label}: {err}",
                 label = label.to_string_lossy(),
                 err = strip_errno(err)
@@ -207,7 +214,11 @@ impl<'a> OutputWriter<'a> {
 
     /// Write the "binary file matches" message to stderr.
     pub fn report_binary_match(&self, path: &Path) {
-        eprintln!("grep: {}: binary file matches", path.display());
+        let _ = writeln!(
+            io::stderr(),
+            "grep: {}: binary file matches",
+            path.display()
+        );
     }
 
     /// Write the group separator between context groups.

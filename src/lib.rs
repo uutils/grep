@@ -22,7 +22,7 @@ use std::io::{IsTerminal as _, Read};
 use std::path::Path;
 use uucore::error::{ExitCode, FromIo, UResult, USimpleError};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[doc(hidden)]
 pub enum RegexMode {
     Fixed,
@@ -140,6 +140,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         .map_or(Default::default(), |v| v.collect());
     let extended_regexp = matches.get_flag("extended_regexp");
     let fixed_strings = matches.get_flag("fixed_strings");
+    let basic_regexp = matches.get_flag("basic_regexp");
     let perl_regexp = matches.get_flag("perl_regexp");
     let regexp = matches.get_many::<String>("regexp").unwrap_or_default();
     let file_pattern = matches
@@ -197,6 +198,17 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     #[cfg(windows)]
     let binary = matches.get_flag("binary");
 
+    let matcher_mode_count = [extended_regexp, fixed_strings, basic_regexp, perl_regexp]
+        .into_iter()
+        .filter(|matched| *matched)
+        .count();
+    if matcher_mode_count > 1 {
+        return Err(USimpleError::new(
+            2,
+            "conflicting matchers specified".to_string(),
+        ));
+    }
+
     // With -e/-f given, ALL positionals are files.
     let has_explicit_patterns = regexp.len() != 0 || file_pattern.len() != 0;
     let (positional_pattern, file_args) = if has_explicit_patterns {
@@ -252,6 +264,14 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         return Err(USimpleError::new(
             2,
             "no PATTERN specified. Try 'grep --help' for more information.".to_string(),
+        ));
+    }
+
+    // GNU grep's PCRE backend (-P) supports only a single pattern.
+    if perl_regexp && patterns.len() > 1 {
+        return Err(USimpleError::new(
+            2,
+            "the -P option only supports a single pattern".to_string(),
         ));
     }
 
@@ -399,7 +419,15 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     };
 
     let matcher = Matcher::compile(&config)?;
+
+    // grep with -m 0 should not open any file
     if config.max_count == Some(0) {
+        return Err(ExitCode::new(1));
+    }
+
+    // An empty pattern matches every line; with `-v`, GNU grep selects no lines
+    // and exits as "no match" without reading any input files.
+    if invert_match && patterns.iter().any(|pattern| pattern.is_empty()) {
         return Err(ExitCode::new(1));
     }
 
@@ -457,32 +485,28 @@ pub fn uu_app() -> Command {
                 .short('E')
                 .long("extended-regexp")
                 .help("PATTERNS are extended regular expressions")
-                .action(ArgAction::SetTrue)
-                .overrides_with_all(["basic_regexp", "fixed_strings", "perl_regexp"]),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("fixed_strings")
                 .short('F')
                 .long("fixed-strings")
                 .help("PATTERNS are strings")
-                .action(ArgAction::SetTrue)
-                .overrides_with_all(["basic_regexp", "extended_regexp", "perl_regexp"]),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("basic_regexp")
                 .short('G')
                 .long("basic-regexp")
                 .help("PATTERNS are basic regular expressions")
-                .action(ArgAction::SetTrue)
-                .overrides_with_all(["extended_regexp", "fixed_strings", "perl_regexp"]),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("perl_regexp")
                 .short('P')
                 .long("perl-regexp")
                 .help("PATTERNS are Perl regular expressions")
-                .action(ArgAction::SetTrue)
-                .overrides_with_all(["basic_regexp", "extended_regexp", "fixed_strings"]),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("regexp")

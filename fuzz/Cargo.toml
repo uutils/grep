@@ -1,0 +1,33 @@
+[package]
+name = "uu_grep-fuzz"
+version = "0.0.0"
+description = "uutils ~ 'grep' fuzzers"
+repository = "https://github.com/microsoft/uutils-grep/tree/main/fuzz/"
+edition = "2024"
+rust-version = "1.88.0"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Prevent this from interfering with the parent workspace
+[workspace]
+members = ["."]
+
+# Enable debug symbols in release builds for readable backtraces
+# when fuzzing discovers crashes.
+[profile.release]
+debug = true
+
+[dependencies]
+libfuzzer-sys = "0.4.7"
+rand = { version = "0.10.1", features = ["std_rng"] }
+uufuzz = { path = "uufuzz" }
+uu_grep = { path = ".." }
+
+[[bin]]
+name = "fuzz_grep"
+path = "fuzz_targets/fuzz_grep.rs"
+test = false
+doc = false

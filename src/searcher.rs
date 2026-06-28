@@ -8,7 +8,8 @@ use crate::line_buffer::LineBuffer;
 use crate::matcher::Matcher;
 use crate::output::OutputWriter;
 use crate::{BinaryMode, Config, DeviceMode, DirectoryMode};
-use memchr::memchr;
+use memchr::memmem::Finder;
+use memchr::{memchr, memchr_iter, memrchr};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
@@ -117,7 +118,12 @@ impl<'a> Searcher<'a> {
             .flush()
             .map_err_context(|| "(standard output)".to_string())?;
 
-        if self.had_error {
+        // With -q, a match yields exit status 0 even if an error (e.g. a
+        // missing file) occurred earlier: GNU exits as soon as a line is
+        // selected, so the error never affects the status.
+        if self.config.quiet && self.any_match {
+            Ok(())
+        } else if self.had_error {
             Err(ExitCode::new(2))
         } else if self.any_match {
             Ok(())
@@ -248,12 +254,221 @@ impl<'a> Searcher<'a> {
         self.binary_notice_enabled && self.session_binary_detected && self.session_any_match()
     }
 
+    /// Whether the current configuration can use the buffer-at-a-time fast
+    /// path. It applies only to pure-literal patterns and the simpler output
+    /// modes — anything needing match positions, context, inversion, or special
+    /// binary handling falls back to the line-at-a-time [`Self::session_run`].
+    fn eligible_for_fast_path(&self) -> bool {
+        // On Windows the line-at-a-time path strips a trailing CR before
+        // matching; the fast path mirrors that only for printed output, so a
+        // literal needle still behaves the same. Nothing else differs.
+        self.matcher.literal_searchers().is_some()
+            && !self.config.invert_match
+            && !self.config.word_regexp
+            && !self.config.line_regexp
+            && !self.config.only_matching
+            && !self.config.use_color
+            // `has_context` also covers `-C 0`, which still emits `--` separators.
+            && !self.config.has_context
+            && !self.config.null_data
+            && self.config.binary_mode != BinaryMode::WithoutMatch
+    }
+
+    /// Buffer-at-a-time driver for literal patterns. Instead of testing every
+    /// line, it scans whole chunks with a substring searcher and only locates
+    /// line boundaries around the matches it finds.
+    fn session_run_fast(
+        &mut self,
+        lb: &mut LineBuffer,
+        path: &Path,
+        reader: &mut File,
+    ) -> io::Result<bool> {
+        lb.reset();
+        if self.config.quiet
+            || self.config.files_with_matches
+            || self.config.files_without_match
+            || self.config.count
+        {
+            self.fast_locate(lb, path, reader)
+        } else {
+            self.fast_print(lb, path, reader)
+        }
+    }
+
+    /// Fast path for modes that only need to know *whether* / *how many* lines
+    /// match: `-c`, `-l`, `-L`, `-q`. No per-line rendering, so no line numbers,
+    /// byte offsets, or binary bookkeeping are required (the count of matching
+    /// lines is unaffected by binary detection, and `-l`/`-L`/`-q` list files
+    /// regardless).
+    fn fast_locate(
+        &mut self,
+        lb: &mut LineBuffer,
+        path: &Path,
+        reader: &mut File,
+    ) -> io::Result<bool> {
+        let finders = self
+            .matcher
+            .literal_searchers()
+            .expect("eligibility guarantees literal searchers");
+        let max = self.config.max_count;
+        // Existence is enough for these three; only `-c` needs the full tally.
+        let stop_at_first =
+            self.config.quiet || self.config.files_with_matches || self.config.files_without_match;
+
+        let mut count: u64 = 0;
+        let mut matched = false;
+        'outer: while let Some((chunk, _)) = lb.read_chunk(reader)? {
+            let mut p = 0;
+            while p < chunk.len() {
+                let Some(rel) = leftmost_match(finders, &chunk[p..]) else {
+                    break;
+                };
+                if max.is_some_and(|mx| count >= mx) {
+                    break 'outer;
+                }
+                let (_, line_end) = line_bounds(chunk, p + rel);
+                count += 1;
+                matched = true;
+                if stop_at_first {
+                    break 'outer;
+                }
+                // Each line counts once: resume past this line's terminator.
+                p = line_end + 1;
+            }
+        }
+
+        // `-l`/`-L` take precedence over `-c`, matching the line-at-a-time path.
+        if self.config.quiet {
+            // Exit status only.
+        } else if self.config.files_with_matches {
+            if matched {
+                self.writer.write_filename(path)?;
+            }
+        } else if self.config.files_without_match {
+            if !matched {
+                self.writer.write_filename(path)?;
+            }
+        } else if self.config.count {
+            self.writer.write_count(count, path)?;
+        }
+        Ok(matched)
+    }
+
+    /// Fast path that prints whole matching lines (optionally with `-n`, `-b`,
+    /// filename prefixes, `-m`). Binary files are detected per chunk and reported
+    /// with the usual notice instead of dumping their lines.
+    fn fast_print(
+        &mut self,
+        lb: &mut LineBuffer,
+        path: &Path,
+        reader: &mut File,
+    ) -> io::Result<bool> {
+        let finders = self
+            .matcher
+            .literal_searchers()
+            .expect("eligibility guarantees literal searchers");
+        let max = self.config.max_count;
+        let want_lineno = self.config.line_number;
+        let detect_binary = self.config.binary_mode != BinaryMode::Text;
+        let notice_enabled = self.binary_notice_enabled;
+
+        let mut count: u64 = 0;
+        let mut matched = false;
+        let mut binary = false;
+        // Number of terminators in all previously consumed chunks (for `-n`).
+        let mut base_lines: u64 = 0;
+
+        'outer: while let Some((chunk, chunk_off)) = lb.read_chunk(reader)? {
+            let mut p = 0;
+            // NUL scanned up to here; terminators counted up to `nl_cursor`.
+            let mut nul_scanned = 0;
+            let mut nl_cursor = 0;
+            let mut nl_before = 0u64;
+
+            while p < chunk.len() {
+                let Some(rel) = leftmost_match(finders, &chunk[p..]) else {
+                    break;
+                };
+                if max.is_some_and(|mx| count >= mx) {
+                    break 'outer;
+                }
+                let (line_beg, line_end) = line_bounds(chunk, p + rel);
+
+                // A NUL anywhere up to this line marks the file binary, as does
+                // an invalid-UTF-8 matching line.
+                if detect_binary && !binary {
+                    if memchr(0, &chunk[nul_scanned..line_end]).is_some() {
+                        binary = true;
+                    }
+                    nul_scanned = line_end;
+                }
+
+                let line = &chunk[line_beg..line_end];
+                #[cfg(windows)]
+                let line = if self.config.strip_cr && line.last() == Some(&b'\r') {
+                    &line[..line.len() - 1]
+                } else {
+                    line
+                };
+
+                if detect_binary && !binary && std::str::from_utf8(line).is_err() {
+                    binary = true;
+                }
+
+                if binary {
+                    // First match in a binary file: stop and emit the notice
+                    // once at the end instead of dumping the line.
+                    matched = true;
+                    break 'outer;
+                }
+
+                let line_number = if want_lineno {
+                    nl_before += count_terminators(&chunk[nl_cursor..line_beg]);
+                    nl_cursor = line_beg;
+                    base_lines + nl_before + 1
+                } else {
+                    0
+                };
+                self.writer.write_line(
+                    &LineView {
+                        line,
+                        line_number,
+                        byte_offset: chunk_off + line_beg as u64,
+                        is_match: true,
+                        match_positions: &[],
+                    },
+                    path,
+                )?;
+                count += 1;
+                matched = true;
+                p = line_end + 1;
+            }
+
+            // Carry NUL detection and the line tally across the chunk boundary.
+            if detect_binary && !binary && memchr(0, &chunk[nul_scanned..]).is_some() {
+                binary = true;
+            }
+            if want_lineno {
+                base_lines += nl_before + count_terminators(&chunk[nl_cursor..]);
+            }
+        }
+
+        if binary && notice_enabled && matched {
+            self.writer.report_binary_match(path);
+        }
+        Ok(matched)
+    }
+
     fn session_run(
         &mut self,
         lb: &mut LineBuffer,
         path: &Path,
         reader: &mut File,
     ) -> io::Result<bool> {
+        if self.eligible_for_fast_path() {
+            return self.session_run_fast(lb, path, reader);
+        }
+
         // Reset all session (per-file) state.
         self.session_context_buf.clear();
         self.session_match_count = 0;
@@ -283,7 +498,9 @@ impl<'a> Searcher<'a> {
 
             if let Some(positions) = self.session_match_line(line) {
                 // TODO: GNU grep respects LANG. Here, I'm always checking for valid UTF-8.
-                if !self.session_mark_binary_if(|| std::str::from_utf8(line).is_err()) {
+                if self.config.binary_mode != BinaryMode::WithoutMatch
+                    && !self.session_mark_binary_if(|| std::str::from_utf8(line).is_err())
+                {
                     return Ok(false);
                 }
 
@@ -407,21 +624,33 @@ impl<'a> Searcher<'a> {
         path: &Path,
         view: &LineView<'_>,
     ) -> io::Result<()> {
+        let last_printed_line = self.session_last_printed_line;
+        let mut context = self.session_context_buf.drain_iter().peekable();
+
+        while context
+            .peek()
+            .is_some_and(|ctx| ctx.line_number <= last_printed_line)
+        {
+            context.next();
+        }
+
+        let group_start_line = context
+            .peek()
+            .map_or(view.line_number, |ctx| ctx.line_number);
+
         // Group separator between non-adjacent groups.
         // `last_printed_line == 0` means we haven't printed anything yet.
         //   = first group = skip the separator
         if self.config.has_context
-            && self.session_last_printed_line > 0
-            && view.line_number > self.session_last_printed_line + 1
+            && last_printed_line > 0
+            && group_start_line > last_printed_line + 1
         {
             self.writer.write_group_separator()?;
         }
 
-        for ctx in self.session_context_buf.drain_iter() {
-            if ctx.line_number > self.session_last_printed_line {
-                self.writer.write_line(&ctx.view(), path)?;
-                self.session_last_printed_line = ctx.line_number;
-            }
+        for ctx in context {
+            self.writer.write_line(&ctx.view(), path)?;
+            self.session_last_printed_line = ctx.line_number;
         }
 
         self.writer.write_line(view, path)?;
@@ -431,15 +660,19 @@ impl<'a> Searcher<'a> {
 
     /// End-of-file bookkeeping: count / `-L` / binary notice.
     fn session_finalize(&mut self, path: &Path) -> io::Result<bool> {
-        if self.config.count && !self.config.files_with_matches && !self.config.files_without_match
-        {
-            self.writer.write_count(self.session_match_count, path)?;
-        }
-        if self.config.files_without_match && !self.session_any_match() {
-            self.writer.write_filename(path)?;
-        }
-        if self.session_should_emit_binary_notice() {
-            self.writer.report_binary_match(path);
+        if !self.config.quiet {
+            if self.config.count
+                && !self.config.files_with_matches
+                && !self.config.files_without_match
+            {
+                self.writer.write_count(self.session_match_count, path)?;
+            }
+            if self.config.files_without_match && !self.session_any_match() {
+                self.writer.write_filename(path)?;
+            }
+            if self.session_should_emit_binary_notice() {
+                self.writer.report_binary_match(path);
+            }
         }
         Ok(self.session_any_match())
     }
@@ -469,4 +702,32 @@ impl<'a> Searcher<'a> {
             Err(_) => false,
         }
     }
+}
+
+/// Offset of the earliest occurrence of any needle in `hay`, or `None`.
+fn leftmost_match(finders: &[Finder<'static>], hay: &[u8]) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for finder in finders {
+        if let Some(pos) = finder.find(hay) {
+            best = Some(best.map_or(pos, |b| b.min(pos)));
+            if best == Some(0) {
+                break; // Can't start any earlier.
+            }
+        }
+    }
+    best
+}
+
+/// Count line terminators in `bytes`.
+fn count_terminators(bytes: &[u8]) -> u64 {
+    memchr_iter(b'\n', bytes).count() as u64
+}
+
+/// Byte range `[start, end)` of the line containing `pos` in `buf`, excluding
+/// the trailing terminator. `start` follows the previous terminator (or 0);
+/// `end` is the next terminator (or end of buffer).
+fn line_bounds(buf: &[u8], pos: usize) -> (usize, usize) {
+    let start = memrchr(b'\n', &buf[..pos]).map_or(0, |i| i + 1);
+    let end = memchr(b'\n', &buf[pos..]).map_or(buf.len(), |i| pos + i);
+    (start, end)
 }
