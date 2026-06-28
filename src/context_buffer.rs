@@ -42,13 +42,15 @@ impl BufferedLine {
 /// provide a more optimized `ContextBuffer` when `mmap()` is available.
 pub struct ContextBuffer {
     slots: Vec<BufferedLine>,
+    /// Retention limit; `slots` is rounded up to a power of two.
+    capacity: usize,
     head: usize,
     len: usize,
 }
 
 impl ContextBuffer {
     pub fn new(capacity: usize) -> Self {
-        let len = if capacity == 0 {
+        let slots = if capacity == 0 {
             0
         } else {
             capacity.next_power_of_two()
@@ -60,8 +62,9 @@ impl ContextBuffer {
                     line_number: 0,
                     byte_offset: 0,
                 };
-                len
+                slots
             ],
+            capacity,
             head: 0,
             len: 0,
         }
@@ -90,7 +93,7 @@ impl ContextBuffer {
         slot.byte_offset = byte_offset;
 
         self.head = self.head.wrapping_add(1);
-        self.len = (self.len + 1).min(self.slots.len());
+        self.len = (self.len + 1).min(self.capacity);
     }
 
     pub fn drain_iter(&mut self) -> impl Iterator<Item = &BufferedLine> {
