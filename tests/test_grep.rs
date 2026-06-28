@@ -142,6 +142,18 @@ fn ere_invalid_pattern_is_error() {
 }
 
 #[test]
+fn reversed_range_endpoints_match_gnu_message() {
+    // A reversed bracket range like `[b-a]` must fail with exit 2 and GNU's
+    // diagnostic "Invalid range end", in both basic and extended modes.
+    for args in [&["[b-a]"][..], &["-E", "[b-a]"][..]] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .fails_with_code(2)
+            .stderr_contains("Invalid range end");
+    }
+}
+
+#[test]
 fn quiet_match_overrides_file_error() {
     // With -q, a match makes grep exit 0 even if an earlier file could not be
     // opened. Without -q the missing file still yields exit 2, and -q with no

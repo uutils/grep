@@ -9,7 +9,9 @@ use onig::{
     EncodedBytes, Regex, RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior,
     SyntaxOperator,
 };
-use onig_sys::{OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8};
+use onig_sys::{
+    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
+};
 use uucore::error::{UResult, USimpleError};
 use uucore::show_warning;
 
@@ -311,7 +313,14 @@ impl CompiledPattern {
 
         fn compile_with(pattern: &str, syntax: &Syntax, options: RegexOptions) -> UResult<Regex> {
             Regex::with_options_and_encoding(pattern, options, syntax).map_err(|err| {
-                USimpleError::new(2, format!("invalid pattern \"{pattern}\": {err}"))
+                // A reversed range like `[b-a]` is ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS.
+                // GNU grep reports it simply as "Invalid range end" (no pattern
+                // echoed), so translate this code to match its diagnostic.
+                let message = match err.code() {
+                    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS => "Invalid range end".to_string(),
+                    _ => format!("invalid pattern \"{pattern}\": {err}"),
+                };
+                USimpleError::new(2, message)
             })
         }
 
