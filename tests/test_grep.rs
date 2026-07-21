@@ -414,6 +414,29 @@ fn word_regexp() {
 }
 
 #[test]
+fn non_ascii_bytes_are_not_word_characters() {
+    let input = &b"r\xc3z\nz\xc3r\ncaf\xc3\xa9\n\xc3\xa9caf\n"[..];
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-a", "-F", "-w", "r"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_is_bytes(b"r\xc3z\nz\xc3r\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-a", "-o", r"caf\b"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("caf\ncaf\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-a", "-o", r"\bcaf"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("caf\ncaf\n");
+}
+
+#[test]
 fn line_regexp() {
     let (_s, mut c) = ucmd();
     c.args(&["-x", "foo bar"])

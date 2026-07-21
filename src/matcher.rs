@@ -10,7 +10,7 @@ use onig::{
     SyntaxOperator,
 };
 use onig_sys::{
-    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
+    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingASCII,
 };
 use uucore::error::{UResult, USimpleError};
 use uucore::show_warning;
@@ -115,10 +115,11 @@ impl<'a> Matcher<'a> {
     /// NOTE that `-w` does not check both sides, unlike `\b` in a regex.
     /// Start/End-of-line count as non-words.
     fn is_word_match(line: &[u8], start: usize, end: usize) -> bool {
-        // SAFETY: This code uses OnigEncodingType such that it can support other types of encodings in the future.
+        // SAFETY: The function pointers come from Oniguruma's static ASCII
+        // encoding descriptor and are guaranteed to be present.
         unsafe {
-            let mbc_to_code = OnigEncodingUTF8.mbc_to_code.unwrap_unchecked();
-            let is_code_ctype = OnigEncodingUTF8.is_code_ctype.unwrap_unchecked();
+            let mbc_to_code = OnigEncodingASCII.mbc_to_code.unwrap_unchecked();
+            let is_code_ctype = OnigEncodingASCII.is_code_ctype.unwrap_unchecked();
             let line_end = line.as_ptr().add(line.len());
 
             if end < line.len() {
@@ -129,7 +130,7 @@ impl<'a> Matcher<'a> {
             }
 
             if start > 0 {
-                let left_adjust = OnigEncodingUTF8.left_adjust_char_head.unwrap_unchecked();
+                let left_adjust = OnigEncodingASCII.left_adjust_char_head.unwrap_unchecked();
                 let head = left_adjust(line.as_ptr(), line.as_ptr().add(start - 1));
                 let cp = mbc_to_code(head, line_end);
                 if is_code_ctype(cp, OnigEncCtype_ONIGENC_CTYPE_WORD) != 0 {
@@ -312,7 +313,12 @@ impl CompiledPattern {
         }
 
         fn compile_with(pattern: &str, syntax: &Syntax, options: RegexOptions) -> UResult<Regex> {
-            Regex::with_options_and_encoding(pattern, options, syntax).map_err(|err| {
+            Regex::with_options_and_encoding(
+                EncodedBytes::ascii(pattern.as_bytes()),
+                options,
+                syntax,
+            )
+            .map_err(|err| {
                 // A reversed range like `[b-a]` is ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS.
                 // GNU grep reports it simply as "Invalid range end" (no pattern
                 // echoed), so translate this code to match its diagnostic.
@@ -340,7 +346,7 @@ impl CompiledPattern {
     fn search_leftmost(&self, line: &[u8], offset: usize) -> Option<(usize, usize)> {
         let mut region = Region::new();
         self.leftmost.search_with_encoding(
-            EncodedBytes::from_parts(line, &raw mut OnigEncodingUTF8),
+            EncodedBytes::ascii(line),
             offset,
             line.len(),
             SearchOptions::SEARCH_OPTION_NONE,
@@ -354,7 +360,7 @@ impl CompiledPattern {
     fn longest_end_at(&self, line: &[u8], start: usize) -> Option<usize> {
         let mut region = Region::new();
         self.longest_anchored.match_with_encoding(
-            EncodedBytes::from_parts(line, &raw mut OnigEncodingUTF8),
+            EncodedBytes::ascii(line),
             start,
             SearchOptions::SEARCH_OPTION_NONE,
             Some(&mut region),
@@ -366,7 +372,7 @@ impl CompiledPattern {
     fn is_match(&self, line: &[u8]) -> bool {
         self.leftmost
             .search_with_encoding(
-                EncodedBytes::from_parts(line, &raw mut OnigEncodingUTF8),
+                EncodedBytes::ascii(line),
                 0,
                 line.len(),
                 SearchOptions::SEARCH_OPTION_NONE,
