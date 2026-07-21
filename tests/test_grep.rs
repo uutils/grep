@@ -142,6 +142,18 @@ fn ere_invalid_pattern_is_error() {
 }
 
 #[test]
+fn reversed_range_endpoints_match_gnu_message() {
+    // A reversed bracket range like `[b-a]` must fail with exit 2 and GNU's
+    // diagnostic "Invalid range end", in both basic and extended modes.
+    for args in [&["[b-a]"][..], &["-E", "[b-a]"][..]] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .fails_with_code(2)
+            .stderr_contains("Invalid range end");
+    }
+}
+
+#[test]
 fn quiet_match_overrides_file_error() {
     // With -q, a match makes grep exit 0 even if an earlier file could not be
     // opened. Without -q the missing file still yields exit 2, and -q with no
@@ -446,6 +458,21 @@ fn max_count() {
         .pipe_in("a\n")
         .fails_with_code(1)
         .no_stdout();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-m", "0", "a", "missing"])
+        .fails_with_code(1)
+        .no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-m", "1", "a", "missing"])
+        .fails_with_code(2)
+        .stderr_contains("grep: missing:");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-m", "0", "-e", "["])
+        .fails_with_code(2)
+        .stderr_contains("invalid pattern");
 
     // -A trailing context still printed after the cutoff.
     let (_s, mut c) = ucmd();
@@ -986,6 +1013,41 @@ fn color_always_emits_sgr_el_sequence() {
 fn color_never_emits_no_escapes() {
     let (_s, mut c) = ucmd();
     c.args(&["--color=never", "foo"])
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_only("foo\n");
+}
+
+#[test]
+fn grep_colors_mt_sets_match_color() {
+    // `mt` in GREP_COLORS sets the matched-text color (equivalent to ms + mc).
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLORS", "mt=36")
+        .args(&["--color=always", "foo"])
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_contains("\x1b[36m\x1b[Kfoo\x1b[m\x1b[K");
+}
+
+#[test]
+fn grep_color_env_is_deprecated_with_warning() {
+    // GREP_COLOR still selects the match color but, when color is active, emits
+    // GNU's deprecation warning pointing at GREP_COLORS 'mt'.
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLOR", "36")
+        .args(&["--color=always", "foo"])
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_contains("\x1b[36m\x1b[Kfoo\x1b[m\x1b[K")
+        .stderr_contains("warning: GREP_COLOR='36' is deprecated; use GREP_COLORS='mt=36'");
+}
+
+#[test]
+fn grep_color_env_no_warning_without_color() {
+    // Without active color output, GREP_COLOR must not trigger the warning.
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLOR", "36")
+        .args(&["--color=never", "foo"])
         .pipe_in("foo\n")
         .succeeds()
         .stdout_only("foo\n");
@@ -1695,4 +1757,35 @@ fn fast_path_binary_detected_after_a_printed_line() {
         .succeeds()
         .stdout_is("hit\n")
         .stderr_contains("binary file matches");
+}
+
+#[test]
+fn only_matching_with_context() {
+    // `only_matching` should override any context arguments.
+    let input = "aa\nbb\ncc\nxx\n";
+
+    let (_s, mut c) = ucmd();
+    c.args(&["aa", "-o", "-A", "2"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("aa\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["xx", "-o", "-B", "2"])
+        .pipe_in("aa\nbb\ncc\nxx\n")
+        .succeeds()
+        .stdout_only("xx\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["cc", "-o", "-C", "2"])
+        .pipe_in("aa\nbb\ncc\nxx\n")
+        .succeeds()
+        .stdout_only("cc\n");
+
+    // With line numbers.
+    let (_s, mut c) = ucmd();
+    c.args(&["xx", "-o", "-C", "2", "-n"])
+        .pipe_in("aa\nbb\ncc\nxx\n")
+        .succeeds()
+        .stdout_only("4:xx\n");
 }

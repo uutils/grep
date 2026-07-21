@@ -6,7 +6,9 @@
 use crate::{Config, RegexMode};
 use memchr::memmem;
 use onig::{RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior, SyntaxOperator};
-use onig_sys::{OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8};
+use onig_sys::{
+    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
+};
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
 use uucore::error::{UResult, USimpleError};
@@ -316,7 +318,14 @@ impl CompiledPattern {
             options: RegexOptions,
         ) -> UResult<OnigRegex> {
             OnigRegex::compile(pattern, syntax, options).map_err(|err| {
-                USimpleError::new(2, format!("invalid pattern \"{pattern}\": {err}"))
+                // A reversed range like `[b-a]` is ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS.
+                // GNU grep reports it simply as "Invalid range end" (no pattern
+                // echoed), so translate this code to match its diagnostic.
+                let message = match err.code {
+                    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS => "Invalid range end".to_string(),
+                    _ => format!("invalid pattern \"{pattern}\": {}", err.message),
+                };
+                USimpleError::new(2, message)
             })
         }
 
@@ -366,7 +375,7 @@ unsafe impl Send for OnigRegex {}
 unsafe impl Sync for OnigRegex {}
 
 impl OnigRegex {
-    fn compile(pattern: &str, syntax: &Syntax, options: RegexOptions) -> Result<Self, String> {
+    fn compile(pattern: &str, syntax: &Syntax, options: RegexOptions) -> Result<Self, OnigError> {
         let pattern = pattern.as_bytes();
         let mut raw = null_mut();
         let mut error = onig_sys::OnigErrorInfo {
@@ -405,7 +414,7 @@ impl OnigRegex {
         if result == onig_sys::ONIG_NORMAL as i32 {
             Ok(Self { raw })
         } else {
-            Err(onig_error_message(result, &error))
+            Err(OnigError::new(result, &error))
         }
     }
 
@@ -455,6 +464,20 @@ impl Drop for OnigRegex {
         // SAFETY: `raw` was returned by a successful `onig_new_deluxe` call and
         // is owned by this wrapper.
         unsafe { onig_sys::onig_free(self.raw) }
+    }
+}
+
+struct OnigError {
+    code: i32,
+    message: String,
+}
+
+impl OnigError {
+    fn new(code: i32, info: *const onig_sys::OnigErrorInfo) -> Self {
+        Self {
+            code,
+            message: onig_error_message(code, info),
+        }
     }
 }
 

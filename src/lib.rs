@@ -21,6 +21,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal as _, Read};
 use std::path::Path;
 use uucore::error::{ExitCode, FromIo, UResult, USimpleError};
+use uucore::show_warning;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[doc(hidden)]
@@ -316,11 +317,17 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         _ => ColorMode::Auto,
     };
     let (before_context, after_context, has_context) = {
-        let fallback = context.unwrap_or(0);
-        let before = before_context.unwrap_or(fallback);
-        let after = after_context.unwrap_or(fallback);
-        let has = context.is_some() || before_context.is_some() || after_context.is_some();
-        (before, after, has)
+        // "-o" overrides any context arguments
+        if only_matching {
+            (0, 0, false)
+        } else {
+            let fallback = context.unwrap_or(0);
+            let before = before_context.unwrap_or(fallback);
+            let after = after_context.unwrap_or(fallback);
+            let has = context.is_some() || before_context.is_some() || after_context.is_some();
+
+            (before, after, has)
+        }
     };
     let include_globs = {
         let mut patterns = GlobSet::with_capacity(include.len());
@@ -372,6 +379,11 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         ColorMode::Never => false,
         ColorMode::Auto => std::io::stdout().is_terminal(),
     };
+    // GNU grep treats GREP_COLOR as deprecated: when it is set and color output
+    // is active, warn and point users at the GREP_COLORS 'mt' capability.
+    if use_color && !grep_color.is_empty() {
+        show_warning!("GREP_COLOR='{grep_color}' is deprecated; use GREP_COLORS='mt={grep_color}'");
+    }
     let color_config = ColorConfig::from_env(&grep_color, &grep_colors);
 
     let config = Config {
@@ -419,6 +431,12 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     };
 
     let matcher = Matcher::compile(&config)?;
+
+    // grep with -m 0 should not open any file
+    if config.max_count == Some(0) {
+        return Err(ExitCode::new(1));
+    }
+
     // An empty pattern matches every line; with `-v`, GNU grep selects no lines
     // and exits as "no match" without reading any input files.
     if invert_match && patterns.iter().any(|pattern| pattern.is_empty()) {
@@ -950,6 +968,11 @@ impl<'a> ColorConfig<'a> {
         for item in grep_colors.split(':') {
             if let Some((key, value)) = item.split_once('=') {
                 match key {
+                    // `mt` sets matched text in any line; equivalent to ms + mc.
+                    "mt" => {
+                        config.matched_selected = value;
+                        config.matched_context = value;
+                    }
                     "ms" => config.matched_selected = value,
                     "mc" => config.matched_context = value,
                     "fn" => config.filename = value,

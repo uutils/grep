@@ -138,6 +138,7 @@ jobs:
         PASS=$(jq -r '.summary.passed // 0' "$RESULT_FILE")
         FAIL=$(jq -r '.summary.failed // 0' "$RESULT_FILE")
         SKIP=$(jq -r '.summary.skipped // 0' "$RESULT_FILE")
+        ERROR=0  # Our format doesn't distinguish errors from failures
 
         output="GNU grep tests summary = TOTAL: $TOTAL / PASS: $PASS / FAIL: $FAIL / SKIP: $SKIP"
         echo "${output}"
@@ -145,7 +146,31 @@ jobs:
           echo "::warning ::${output}"
         fi
 
-        outputs TOTAL PASS FAIL SKIP
+        # Build the date-keyed summary consumed by the grep-tracking repo.
+        jq -n \
+              --arg date "$(date --rfc-email)" \
+              --arg sha "$GITHUB_SHA" \
+              --arg total "$TOTAL" \
+              --arg pass "$PASS" \
+              --arg skip "$SKIP" \
+              --arg fail "$FAIL" \
+              --arg error "$ERROR" \
+              '{($date): { sha: $sha, total: $total, pass: $pass, skip: $skip, fail: $fail, error: $error }}' > '${{ steps.vars.outputs.TEST_SUMMARY_FILE }}'
+
+        HASH=$(sha1sum '${{ steps.vars.outputs.TEST_SUMMARY_FILE }}' | cut --delim=" " -f 1)
+        outputs HASH TOTAL PASS FAIL SKIP
+
+    - name: Upload SHA1/ID of 'test-summary'
+      uses: actions/upload-artifact@v4
+      with:
+        name: "${{ steps.summary.outputs.HASH }}"
+        path: "${{ steps.vars.outputs.TEST_SUMMARY_FILE }}"
+
+    - name: Upload test results summary
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-summary
+        path: "${{ steps.vars.outputs.TEST_SUMMARY_FILE }}"
 
     - name: Compare test failures VS reference
       shell: bash

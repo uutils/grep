@@ -57,6 +57,12 @@ This project uses [pre-commit](https://pre-commit.com); run `pre-commit install`
 * No localization support yet
 * Performances need to be improved
 
+## GNU test suite compatibility
+
+Below is the evolution of how many GNU tests uutils passes.
+
+![Evolution over time](https://github.com/uutils/grep-tracking/blob/main/gnu-results.svg?raw=true)
+
 ## Contributing
 
 To contribute to uutils, please see [CONTRIBUTING](CONTRIBUTING.md).
