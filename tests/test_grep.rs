@@ -932,6 +932,126 @@ fn num_shorthand_is_context() {
 }
 
 #[test]
+fn num_shorthand_in_short_option_clusters() {
+    let input = "a\nb\nMATCH\nc\nd\n";
+
+    // A numeric context option can follow another short option in the same argument.
+    let (_s, mut c) = ucmd();
+    c.args(&["-w2", "MATCH"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only(input);
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-i2", "match"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only(input);
+
+    // Preserve option order when a later option overrides the bundled context.
+    let (_s, mut c) = ucmd();
+    c.args(&["-w2C1", "MATCH"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("b\nMATCH\nc\n");
+
+    // Each embedded digit is a context option, so `-w44` finishes with four
+    // lines of context rather than treating the suffix as the number 44.
+    let repeated_input = "zero\none\ntwo\nthree\nfour\nMATCH\nsix\nseven\neight\nnine\nten\n";
+    let (_s, mut c) = ucmd();
+    c.args(&["-w44", "MATCH"])
+        .pipe_in(repeated_input)
+        .succeeds()
+        .stdout_only("one\ntwo\nthree\nfour\nMATCH\nsix\nseven\neight\nnine\n");
+
+    // Regression for the original fuzzer case: trailing flags in the same
+    // cluster are still parsed after the numeric options.
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "a", "-w44ov"])
+        .pipe_in("a\nb\n")
+        .succeeds()
+        .stdout_only("");
+}
+
+#[test]
+fn num_shorthand_does_not_capture_option_values() {
+    // Digits attached to value-taking short options are their values.
+    let (_s, mut c) = ucmd();
+    c.args(&["-e123"])
+        .pipe_in("123\n456\n")
+        .succeeds()
+        .stdout_only("123\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-m2", "x"])
+        .pipe_in("x\nx\nx\n")
+        .succeeds()
+        .stdout_only("x\nx\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-wm2", "x"])
+        .pipe_in("x\nx\nx\n")
+        .succeeds()
+        .stdout_only("x\nx\n");
+
+    // The next argument is also left alone when the preceding option consumes it.
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "-2"])
+        .pipe_in("-2\nx\n")
+        .succeeds()
+        .stdout_only("-2\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["--regexp", "-2"])
+        .pipe_in("-2\nx\n")
+        .succeeds()
+        .stdout_only("-2\n");
+
+    // This remains true after an earlier shorthand forced the cluster to be expanded.
+    let (_s, mut c) = ucmd();
+    c.args(&["-i2e", "-3"])
+        .pipe_in("a\n-3\nb\n")
+        .succeeds()
+        .stdout_only("a\n-3\nb\n");
+}
+
+#[test]
+fn num_shorthand_only_changes_short_options() {
+    let (_s, mut c) = ucmd();
+    c.args(&["--regexp=-2"])
+        .pipe_in("-2\nx\n")
+        .succeeds()
+        .stdout_only("-2\n");
+
+    // `--` ends option parsing, so the following `-2` is the positional pattern.
+    let (_s, mut c) = ucmd();
+    c.args(&["--", "-2"])
+        .pipe_in("-2\nx\n")
+        .succeeds()
+        .stdout_only("-2\n");
+
+    // Digits in an ordinary positional pattern are not option shorthand.
+    let (_s, mut c) = ucmd();
+    c.args(&["w2"])
+        .pipe_in("w2\nw3\n")
+        .succeeds()
+        .stdout_only("w2\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn num_shorthand_preserves_invalid_utf8_arguments() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    // Platform-native arguments that are not UTF-8 are passed through to clap
+    // unchanged instead of being sliced or reconstructed by the preprocessor.
+    let invalid_cluster = OsString::from_vec(vec![b'-', b'w', b'2', 0xff]);
+    let (_s, mut c) = ucmd();
+    c.arg(invalid_cluster).arg("x").pipe_in("x\n").fails();
+}
+
+#[test]
 fn context_line_prefixes_use_dash() {
     // Match line uses `:`, context lines use `-`.
     let (_s, mut c) = ucmd();
