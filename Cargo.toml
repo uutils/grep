@@ -33,4 +33,4 @@ harness = false
 
 [dev-dependencies]
 criterion = { version = "4.7.0", package = "codspeed-criterion-compat" }
-uutests = "0.8.0"
+uutests = "0.9.0"
