@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
     - name: Checkout code (grep)
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         path: 'grep'
         persist-credentials: false
@@ -99,7 +99,7 @@ jobs:
         outputs TEST_SUMMARY_FILE
 
     - name: Checkout code (grep)
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         path: 'grep'
         persist-credentials: false
