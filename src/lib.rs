@@ -837,6 +837,8 @@ pub fn uu_app() -> Command {
 }
 
 /// Expand GNU grep's `-NUM` shorthand to `-C NUM`.
+///
+/// Note that `-a12b` means `-a -C 12 -b`.
 fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
     const SHORT_OPTS_WITH_VALUE: &[u8] = b"efmABCDd";
     const LONG_OPTS_WITH_VALUE: &[&[u8]] = &[
@@ -857,118 +859,84 @@ fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
         b"group-separator",
     ];
 
-    fn short_option_consumes_next(cluster: &[u8]) -> bool {
-        cluster
+    // Rebuild a single option argument out of `prefix` and `bytes`.
+    fn option(prefix: &str, bytes: &[u8]) -> OsString {
+        let mut buf = Vec::with_capacity(prefix.len() + bytes.len());
+        buf.extend_from_slice(prefix.as_bytes());
+        buf.extend_from_slice(bytes);
+        // SAFETY: `bytes` is a subslice of an OsStr's encoded bytes
+        // that starts and ends on ASCII code point boundary.
+        unsafe { OsString::from_encoded_bytes_unchecked(buf) }
+    }
+
+    let mut out: Vec<OsString> = args.collect();
+    let mut i = 1; // argv[0] is the executable name
+
+    while i < out.len() {
+        let arg = out[i].as_encoded_bytes();
+
+        // Narrow down to `-flags` (and `--options`) and strip the leading `-` for easier matching.
+        let Some(arg) = arg.strip_prefix(b"-") else {
+            // Not a flag, skip.
+            i += 1;
+            continue;
+        };
+
+        // No more options after `--`.
+        if arg == b"-" {
+            break;
+        }
+
+        // Skip --long options.
+        if let Some(name) = arg.strip_prefix(b"-") {
+            i += 1 + usize::from(LONG_OPTS_WITH_VALUE.contains(&name));
+            continue;
+        }
+
+        // Find the first byte that isn't a plain short option: a digit to
+        // translate, or a byte that claims the rest of the argument (an option
+        // taking a value like -ePATTERN, or something that's no option at all).
+        let Some(at) = arg
             .iter()
-            .position(|b| SHORT_OPTS_WITH_VALUE.contains(b))
-            .is_some_and(|i| i + 1 == cluster.len())
-    }
-
-    fn has_context_digit(cluster: &[u8]) -> bool {
-        for b in cluster {
-            if SHORT_OPTS_WITH_VALUE.contains(b) {
-                return false;
-            }
-            if b.is_ascii_digit() {
-                return true;
-            }
-        }
-        false
-    }
-
-    let mut args = args;
-    let mut out = Vec::new();
-    let Some(program) = args.next() else {
-        return out;
-    };
-    out.push(program);
-
-    let mut parsing_options = true;
-    let mut consumes_next = false;
-
-    for arg in args {
-        if !parsing_options || consumes_next {
-            consumes_next = false;
-            out.push(arg);
-            continue;
-        }
-
-        // Only ASCII short options can contain a numeric shorthand. Leaving any
-        // other platform-native argument intact also avoids making assumptions
-        // about the encoding of an OsString.
-        let Some(arg_str) = arg.to_str() else {
-            out.push(arg);
+            .position(|b| b.is_ascii_digit() || !b.is_ascii() || SHORT_OPTS_WITH_VALUE.contains(b))
+        else {
+            // Plain short options only.
+            i += 1;
             continue;
         };
 
-        if arg_str == "--" {
-            parsing_options = false;
-            out.push(arg);
+        if !arg[at].is_ascii_digit() {
+            // Nothing to rewrite. A value option with nothing
+            // attached takes the next argument instead.
+            let consumes_next = at + 1 == arg.len() && SHORT_OPTS_WITH_VALUE.contains(&arg[at]);
+            i += 1 + usize::from(consumes_next);
             continue;
         }
 
-        let Some(option) = arg_str.strip_prefix('-') else {
-            out.push(arg);
-            continue;
-        };
+        // Translate -aNUMb to -a -C NUM -b. option() only deals with ASCII and
+        // we don't need to deal with anything else either, so the translation
+        // stops at the byte that claims the rest of the argument.
+        let end = arg[at..]
+            .iter()
+            .position(|b| !b.is_ascii() || SHORT_OPTS_WITH_VALUE.contains(b))
+            .map_or(arg.len(), |n| at + n);
+        let (options, rest) = arg.split_at(end);
+        let consumes_next = rest.len() == 1 && SHORT_OPTS_WITH_VALUE.contains(&rest[0]);
+        let mut expanded = Vec::with_capacity(options.len() + 1);
 
-        if option.is_empty() {
-            out.push(arg);
-            continue;
+        for chunk in options.chunk_by(|a, b| a.is_ascii_digit() == b.is_ascii_digit()) {
+            let prefix = if chunk[0].is_ascii_digit() { "-C" } else { "-" };
+            expanded.push(option(prefix, chunk));
         }
 
-        if let Some(long_option) = option.strip_prefix('-') {
-            consumes_next = LONG_OPTS_WITH_VALUE.contains(&long_option.as_bytes());
-            out.push(arg);
-            continue;
+        // The tail holds the value option with its value, if any.
+        if !rest.is_empty() {
+            expanded.push(option("-", rest));
         }
 
-        let cluster = option.as_bytes();
-        if !cluster.is_ascii() {
-            out.push(arg);
-            continue;
-        }
-
-        // A standalone digit run is one context value (`-12` means `-C 12`).
-        if cluster.iter().all(u8::is_ascii_digit) {
-            out.push(OsString::from("-C"));
-            out.push(OsString::from(option));
-            continue;
-        }
-
-        // Digits after a value-taking option belong to that option, not to the
-        // context shorthand (for example, `-e123` and `-m2`).
-        if !has_context_digit(cluster) {
-            consumes_next = short_option_consumes_next(cluster);
-            out.push(arg);
-            continue;
-        }
-
-        // A digit embedded in a short-option cluster acts as a single `-NUM`
-        // option at that point in the cluster. Emitting each option separately
-        // preserves left-to-right override semantics.
-        let mut i = 0;
-        while i < cluster.len() {
-            let option = cluster[i];
-            if option.is_ascii_digit() {
-                out.push(OsString::from("-C"));
-                out.push(OsString::from(char::from(option).to_string()));
-                i += 1;
-            } else if SHORT_OPTS_WITH_VALUE.contains(&option) {
-                let mut value_option = String::from("-");
-                value_option.push_str(
-                    std::str::from_utf8(&cluster[i..]).expect("short option cluster is ASCII"),
-                );
-                out.push(OsString::from(value_option));
-                consumes_next = i + 1 == cluster.len();
-                break;
-            } else {
-                let mut flag = String::from("-");
-                flag.push(char::from(option));
-                out.push(OsString::from(flag));
-                i += 1;
-            }
-        }
+        let len = expanded.len();
+        out.splice(i..=i, expanded);
+        i += len + usize::from(consumes_next);
     }
 
     out
