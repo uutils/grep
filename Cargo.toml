@@ -34,3 +34,7 @@ harness = false
 [dev-dependencies]
 criterion = { version = "5.0.0", package = "codspeed-criterion-compat" }
 uutests = "0.9.0"
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
