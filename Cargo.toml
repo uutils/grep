@@ -10,6 +10,14 @@ homepage = "https://github.com/uutils/grep"
 keywords = ["grep", "uutils", "cross-platform", "cli", "utility"]
 categories = ["command-line-utilities"]
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "txz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [[bin]]
 name = "grep"
 path = "src/main.rs"
