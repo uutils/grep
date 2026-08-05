@@ -1263,7 +1263,7 @@ dependencies = [
  "memchr",
  "onig",
  "onig_sys",
- "uucore",
+ "uucore 0.10.0",
  "uutests",
  "walkdir",
 ]
@@ -1287,7 +1287,27 @@ dependencies = [
  "thiserror",
  "time",
  "unic-langid",
- "uucore_procs",
+ "uucore_procs 0.9.0",
+ "wild",
+]
+
+[[package]]
+name = "uucore"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e97dd0fd8bb2ed12affba9f956c3b94b8ad3f9432746717475420e916ae0b8d4"
+dependencies = [
+ "clap",
+ "fluent",
+ "fluent-syntax",
+ "nix",
+ "os_display",
+ "rustc-hash",
+ "rustix",
+ "thiserror",
+ "unic-langid",
+ "unicode-width",
+ "uucore_procs 0.10.0",
  "wild",
 ]
 
@@ -1296,6 +1316,16 @@ name = "uucore_procs"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34337da211e7abfff7189b794afb3b5018fe356fb36474b73645458fc1201350"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
+name = "uucore_procs"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "907f1b828046ea42cdb4bd898f05b48ab873a41937bf75ebe12f09a5bf411f58"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1315,7 +1345,7 @@ dependencies = [
  "regex",
  "rlimit",
  "tempfile",
- "uucore",
+ "uucore 0.9.0",
  "xattr",
 ]
 
