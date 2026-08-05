@@ -158,8 +158,11 @@ fn quiet_match_overrides_file_error() {
     // With -q, a match makes grep exit 0 even if an earlier file could not be
     // opened. Without -q the missing file still yields exit 2, and -q with no
     // match keeps the error status.
+    // -q exits at the first match without draining stdin, so the harness's
+    // write can lose the race and fail with EPIPE; that error is expected here.
     let (_s, mut c) = ucmd();
     c.args(&["-q", "abc", "no-such-file", "-"])
+        .ignore_stdin_write_error()
         .pipe_in("abcd\n")
         .succeeds()
         .no_output();
@@ -430,9 +433,13 @@ fn line_regexp() {
 
 #[test]
 fn max_count() {
+    // -m makes grep stop before draining stdin, so the harness's write may fail
+    // with EPIPE. That is expected and must not fail the test.
+
     // Basic cap.
     let (_s, mut c) = ucmd();
     c.args(&["-m", "2", "a"])
+        .ignore_stdin_write_error()
         .pipe_in("a\na\na\na\n")
         .succeeds()
         .stdout_only("a\na\n");
@@ -440,6 +447,7 @@ fn max_count() {
     // -m 0 means zero. Exit 1, no output.
     let (_s, mut c) = ucmd();
     c.args(&["-m", "0", "a"])
+        .ignore_stdin_write_error()
         .pipe_in("a\n")
         .fails_with_code(1)
         .no_stdout();
@@ -462,6 +470,7 @@ fn max_count() {
     // -A trailing context still printed after the cutoff.
     let (_s, mut c) = ucmd();
     c.args(&["-m", "1", "-A", "2", "match"])
+        .ignore_stdin_write_error()
         .pipe_in("noise\nmatch\nctx1\nctx2\ntail\n")
         .succeeds()
         .stdout_only("match\nctx1\nctx2\n");
@@ -469,6 +478,7 @@ fn max_count() {
     // -c is capped by -m.
     let (_s, mut c) = ucmd();
     c.args(&["-c", "-m", "1", "a"])
+        .ignore_stdin_write_error()
         .pipe_in("a\na\na\n")
         .succeeds()
         .stdout_only("1\n");
@@ -557,8 +567,11 @@ fn empty_pattern_matches_every_line() {
 
 #[test]
 fn inverted_empty_pattern_short_circuits() {
+    // grep short-circuits without reading stdin at all, so the harness's write
+    // races grep's exit and may fail with EPIPE.
     let (_s, mut c) = ucmd();
     c.args(&["-e", "", "-v", "-c"])
+        .ignore_stdin_write_error()
         .pipe_in("a\nb\n")
         .fails_with_code(1)
         .no_output();
@@ -568,8 +581,10 @@ fn inverted_empty_pattern_short_circuits() {
         .fails_with_code(1)
         .no_output();
 
+    // Pattern compilation fails before any input is read.
     let (_s, mut c) = ucmd();
     c.args(&["-e", "", "-e", "[", "-v"])
+        .ignore_stdin_write_error()
         .pipe_in("a\n")
         .fails_with_code(2)
         .no_stdout()
@@ -758,9 +773,14 @@ fn only_matching() {
 
 #[test]
 fn quiet_modes() {
-    // Match: exit 0, no output.
+    // Match: exit 0, no output. -q stops at the first match, so an EPIPE on the
+    // harness's stdin write is expected.
     let (_s, mut c) = ucmd();
-    c.args(&["-q", "a"]).pipe_in("a\n").succeeds().no_output();
+    c.args(&["-q", "a"])
+        .ignore_stdin_write_error()
+        .pipe_in("a\n")
+        .succeeds()
+        .no_output();
 
     // No match: exit 1, no output.
     let (_s, mut c) = ucmd();
@@ -1569,9 +1589,11 @@ fn repeated_options_are_accepted() {
         .succeeds()
         .stdout_only("ABC\n");
 
-    // Repeated value options take the last value (here: -m 1 wins).
+    // Repeated value options take the last value (here: -m 1 wins). -m stops
+    // grep before stdin is drained, hence the ignored write error.
     let (_s, mut c) = ucmd();
     c.args(&["-m", "5", "-m", "1", "x"])
+        .ignore_stdin_write_error()
         .pipe_in("x\nx\nx\n")
         .succeeds()
         .stdout_only("x\n");
@@ -1603,9 +1625,10 @@ fn literal_buffer_path_prefixes_and_max() {
         .succeeds()
         .stdout_only("2\n");
 
-    // -m caps printed matches.
+    // -m caps printed matches; grep exits before stdin is drained.
     let (_s, mut c) = ucmd();
     c.args(&["-m", "2", "x"])
+        .ignore_stdin_write_error()
         .pipe_in("x\ny\nx\nz\nx\n")
         .succeeds()
         .stdout_only("x\nx\n");
