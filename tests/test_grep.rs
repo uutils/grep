@@ -154,6 +154,30 @@ fn reversed_range_endpoints_match_gnu_message() {
 }
 
 #[test]
+fn unreadable_pattern_file_is_error() {
+    // An unreadable -f / --exclude-from file is a usage error (exit 2), not the
+    // exit 1 that means "no match".
+    let (scenario, mut c) = ucmd();
+    scenario.fixtures.mkdir("adir");
+    c.args(&["-f", "adir"])
+        .pipe_in("hello\n")
+        .fails_with_code(2)
+        .stderr_contains("adir: Is a directory");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-f", "no-such-pattern-file"])
+        .pipe_in("hello\n")
+        .fails_with_code(2)
+        .stderr_contains("no-such-pattern-file: No such file or directory");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["--exclude-from=no-such-pattern-file", "hello"])
+        .pipe_in("hello\n")
+        .fails_with_code(2)
+        .stderr_contains("no-such-pattern-file: No such file or directory");
+}
+
+#[test]
 fn quiet_match_overrides_file_error() {
     // With -q, a match makes grep exit 0 even if an earlier file could not be
     // opened. Without -q the missing file still yields exit 2, and -q with no

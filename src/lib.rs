@@ -20,7 +20,7 @@ use clap::{Arg, ArgAction, Command};
 use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal as _, Read};
 use std::path::Path;
-use uucore::error::{ExitCode, FromIo, UResult, USimpleError};
+use uucore::error::{ExitCode, UError, UResult, USimpleError, strip_errno};
 use uucore::show_warning;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -126,6 +126,13 @@ pub struct Config<'a> {
     pub group_separator: Option<&'a str>,
     pub use_color: bool,
     pub color_config: ColorConfig<'a>,
+}
+
+/// A file named by `-f` or `--exclude-from` that cannot be read is a usage
+/// error for GNU grep: it exits 2, unlike the exit 1 of a search that found
+/// nothing.
+fn read_error(label: impl std::fmt::Display, err: &std::io::Error) -> Box<dyn UError> {
+    USimpleError::new(2, format!("{label}: {}", strip_errno(err)))
 }
 
 #[uucore::main(no_signals)]
@@ -236,10 +243,10 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
                 let mut buf = String::new();
                 std::io::stdin()
                     .read_to_string(&mut buf)
-                    .map_err_context(|| "(standard input)".to_string())?;
+                    .map_err(|err| read_error("(standard input)", &err))?;
                 buf
             } else {
-                std::fs::read_to_string(path).map_err_context(|| path.to_string())?
+                std::fs::read_to_string(path).map_err(|err| read_error(path, &err))?
             };
             pattern_strings.push(contents);
         }
@@ -342,7 +349,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
             patterns.add(pattern)?;
         }
         for path in exclude_from {
-            let contents = std::fs::read_to_string(path).map_err_context(|| path.to_string())?;
+            let contents = std::fs::read_to_string(path).map_err(|err| read_error(path, &err))?;
             for line in contents.lines() {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
