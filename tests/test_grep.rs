@@ -156,25 +156,41 @@ fn reversed_range_endpoints_match_gnu_message() {
 #[test]
 fn unreadable_pattern_file_is_error() {
     // An unreadable -f / --exclude-from file is a usage error (exit 2), not the
-    // exit 1 that means "no match".
+    // exit 1 that means "no match". Only the label is ours: the text after it
+    // is the operating system's, so match it on Unix alone (Windows says
+    // "Access is denied." for a directory).
+    #[cfg(unix)]
+    const DIRECTORY: &str = "adir: Is a directory";
+    #[cfg(not(unix))]
+    const DIRECTORY: &str = "adir: ";
+    #[cfg(unix)]
+    const MISSING: &str = "no-such-pattern-file: No such file or directory";
+    #[cfg(not(unix))]
+    const MISSING: &str = "no-such-pattern-file: ";
+
+    // The pattern file is read before any input, so grep exits without draining
+    // stdin and the harness's write can lose the race with EPIPE.
     let (scenario, mut c) = ucmd();
     scenario.fixtures.mkdir("adir");
     c.args(&["-f", "adir"])
         .pipe_in("hello\n")
+        .ignore_stdin_write_error()
         .fails_with_code(2)
-        .stderr_contains("adir: Is a directory");
+        .stderr_contains(DIRECTORY);
 
     let (_s, mut c) = ucmd();
     c.args(&["-f", "no-such-pattern-file"])
         .pipe_in("hello\n")
+        .ignore_stdin_write_error()
         .fails_with_code(2)
-        .stderr_contains("no-such-pattern-file: No such file or directory");
+        .stderr_contains(MISSING);
 
     let (_s, mut c) = ucmd();
     c.args(&["--exclude-from=no-such-pattern-file", "hello"])
         .pipe_in("hello\n")
+        .ignore_stdin_write_error()
         .fails_with_code(2)
-        .stderr_contains("no-such-pattern-file: No such file or directory");
+        .stderr_contains(MISSING);
 }
 
 #[test]
