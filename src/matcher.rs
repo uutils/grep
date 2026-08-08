@@ -278,6 +278,15 @@ impl CompiledPattern {
             syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_GNU_BUF_ANCHOR);
         }
 
+        if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended)
+            && has_confusing_bracket(pattern.as_bytes())
+        {
+            return Err(USimpleError::new(
+                2,
+                "character class syntax is [[:space:]], not [:space:]".to_string(),
+            ));
+        }
+
         let mut normalized_pattern = None;
         let pattern = if config.regex_mode == RegexMode::Extended {
             if let Some((op, rest)) = strip_leading_repeat_operator(pattern) {
@@ -525,9 +534,91 @@ fn strip_leading_interval_repeat(pattern: &str) -> Option<&str> {
     is_interval.then_some(&pattern[close + 1..])
 }
 
+/// True when `pattern` holds a bracket expression that looks like a misspelled
+/// character class, e.g. `[:space:]` instead of `[[:space:]]`. GNU grep rejects
+/// those: a bracket whose first and last characters are colons, that holds at
+/// least one other character, and that contains no range, class, equivalence
+/// class or collating element.
+fn has_confusing_bracket(pattern: &[u8]) -> bool {
+    let mut i = 0;
+    while i < pattern.len() {
+        match pattern[i] {
+            b'\\' => i += 2,
+            b'[' => {
+                let (confusing, next) = scan_bracket(pattern, i + 1);
+                if confusing {
+                    return true;
+                }
+                i = next;
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
+/// Scan the body of a bracket expression starting at `start` (just past the
+/// `[`). Returns whether it is a misspelled character class and the index just
+/// past its closing `]`.
+fn scan_bracket(pattern: &[u8], start: usize) -> (bool, usize) {
+    const FIRST_IS_COLON: u8 = 1;
+    const LAST_IS_COLON: u8 = 2;
+    const HAS_OTHER: u8 = 4;
+    const HAS_RANGE_OR_CLASS: u8 = 8;
+
+    let mut i = start;
+    if pattern.get(i) == Some(&b'^') {
+        i += 1;
+    }
+    let body_start = i;
+    let mut state = if pattern.get(i) == Some(&b':') {
+        FIRST_IS_COLON
+    } else {
+        0
+    };
+    while i < pattern.len() {
+        let c = pattern[i];
+        // A `]` right at the start of the body is an ordinary character.
+        if c == b']' && i != body_start {
+            return (state == FIRST_IS_COLON | LAST_IS_COLON | HAS_OTHER, i + 1);
+        }
+        // Only the character just before the closing `]` counts as the last one.
+        state &= !LAST_IS_COLON;
+        // `[:alpha:]`, `[.a.]` and `[=a=]` inside the bracket.
+        if c == b'[' && matches!(pattern.get(i + 1), Some(b':' | b'.' | b'=')) {
+            let delimiter = pattern[i + 1];
+            if let Some(end) = find_bracket_subexpr_end(pattern, i + 2, delimiter) {
+                state |= HAS_RANGE_OR_CLASS;
+                i = end;
+                continue;
+            }
+        }
+        // `x-y` is a range, but the `-` of `[x-]` is an ordinary character.
+        if pattern.get(i + 1) == Some(&b'-')
+            && matches!(pattern.get(i + 2), Some(&other) if other != b']')
+        {
+            state |= HAS_RANGE_OR_CLASS;
+            i += 3;
+            continue;
+        }
+        state |= if c == b':' { LAST_IS_COLON } else { HAS_OTHER };
+        i += 1;
+    }
+    // Unterminated bracket: the regex engine reports that on its own.
+    (false, pattern.len())
+}
+
+/// Index just past the `:]`, `.]` or `=]` closing a `[: [. [=` subexpression
+/// whose body starts at `start`.
+fn find_bracket_subexpr_end(pattern: &[u8], start: usize, delimiter: u8) -> Option<usize> {
+    (start..pattern.len().saturating_sub(1))
+        .find(|&i| pattern[i] == delimiter && pattern[i + 1] == b']')
+        .map(|i| i + 2)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::plain_literal;
+    use super::{has_confusing_bracket, plain_literal};
     use crate::RegexMode;
 
     fn lit(p: &str, ic: bool, mode: RegexMode) -> Option<Vec<u8>> {
@@ -568,5 +659,39 @@ mod tests {
         assert_eq!(lit("abc", true, RegexMode::Basic), None);
         assert_eq!(lit("café", false, RegexMode::Fixed), None); // non-ASCII
         assert_eq!(lit("naïve", false, RegexMode::Basic), None);
+    }
+
+    #[test]
+    fn detects_misspelled_character_classes() {
+        for p in [
+            "[:digit:]",
+            "[^:digit:]",
+            "q[:punct:]w",
+            "[:notaclass:]",
+            "[:x:]",
+            "ab[:blank:]",
+        ] {
+            assert!(has_confusing_bracket(p.as_bytes()), "pattern {p:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_bracket_expressions_that_are_not_confusing() {
+        for p in [
+            "[[:digit:]]",    // the correct spelling
+            "[::]",           // no character besides the colons
+            "[:digit]",       // does not end with a colon
+            "[:digit:qrs]",   // ends with an ordinary character
+            "[:dig-it:]",     // holds a range
+            "[:x[:digit:]:]", // holds a character class
+            "[:x[.,.]:]",     // holds a collating element
+            "[:x[=e=]:]",     // holds an equivalence class
+            "\\[:digit:]",    // the bracket is escaped
+            "[]:digit:]",     // starts with a literal ']'
+            "[:digit:",       // unterminated
+            "[a-z]+[0-9]",    // no colons at all
+        ] {
+            assert!(!has_confusing_bracket(p.as_bytes()), "pattern {p:?}");
+        }
     }
 }

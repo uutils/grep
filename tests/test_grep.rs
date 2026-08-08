@@ -154,6 +154,34 @@ fn reversed_range_endpoints_match_gnu_message() {
 }
 
 #[test]
+fn misspelled_character_class_is_error() {
+    // `[:digit:]` is almost certainly a typo for `[[:digit:]]`; GNU rejects it
+    // with exit 2 in the basic and extended syntaxes.
+    for args in [
+        &["[:digit:]"][..],
+        &["-E", "q[^:digit:]w"][..],
+        &["-E", "[:nosuchclass:]"][..],
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .fails_with_code(2)
+            .stderr_contains("character class syntax is [[:space:]], not [:space:]");
+    }
+
+    // Bracket expressions that only look similar stay valid.
+    for args in [
+        &["[[:digit:]]"][..],
+        &["[::]"][..],
+        &["-E", "[:digit]"][..],
+        &["-E", "[:dig-it:]"][..],
+        &["-F", "[:digit:]"][..],
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(args).pipe_in("w[:digit:]7d\n").succeeds();
+    }
+}
+
+#[test]
 fn quiet_match_overrides_file_error() {
     // With -q, a match makes grep exit 0 even if an earlier file could not be
     // opened. Without -q the missing file still yields exit 2, and -q with no
