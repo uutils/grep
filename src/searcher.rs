@@ -12,7 +12,7 @@ use memchr::memmem::Finder;
 use memchr::{memchr, memchr_iter, memrchr};
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io;
+use std::io::{self, Seek as _, SeekFrom};
 use std::mem::ManuallyDrop;
 use std::ops::ControlFlow;
 use std::path::Path;
@@ -33,6 +33,10 @@ pub struct Searcher<'a> {
     session_after_remaining: usize,
     session_last_printed_line: u64, // 0 = nothing yet
     session_binary_detected: bool,
+    /// Byte offset, relative to where this session started reading, just past
+    /// the terminator of the last selected line. Used to rewind standard input
+    /// when `-m` stops the search early.
+    session_last_match_end: u64,
 }
 
 impl<'a> Searcher<'a> {
@@ -54,6 +58,7 @@ impl<'a> Searcher<'a> {
             session_after_remaining: 0,
             session_last_printed_line: 0,
             session_binary_detected: false,
+            session_last_match_end: 0,
         }
     }
 
@@ -107,7 +112,20 @@ impl<'a> Searcher<'a> {
             self.writer.set_line_number_width(19);
         }
 
+        // Where standard input was before we started buffering ahead of it.
+        let start_offset = stdin.stream_position();
+
         let result = self.session_run(lb, path, &mut stdin);
+
+        // `-m` stops mid-input, but we have read further than the last selected
+        // line. Rewind so whoever reads standard input next sees the rest of it,
+        // as GNU does. A pipe cannot seek; there is nothing to hand back then.
+        if !self.session_can_match()
+            && let Ok(start) = start_offset
+        {
+            let _ = stdin.seek(SeekFrom::Start(start + self.session_last_match_end));
+        }
+
         self.record_result(OsStr::new(&self.config.label), result)
     }
 
@@ -284,6 +302,8 @@ impl<'a> Searcher<'a> {
         reader: &mut File,
     ) -> io::Result<bool> {
         lb.reset();
+        self.session_match_count = 0;
+        self.session_last_match_end = 0;
         if self.config.quiet
             || self.config.files_with_matches
             || self.config.files_without_match
@@ -317,7 +337,7 @@ impl<'a> Searcher<'a> {
 
         let mut count: u64 = 0;
         let mut matched = false;
-        'outer: while let Some((chunk, _)) = lb.read_chunk(reader)? {
+        'outer: while let Some((chunk, chunk_off)) = lb.read_chunk(reader)? {
             let mut p = 0;
             while p < chunk.len() {
                 let Some(rel) = leftmost_match(finders, &chunk[p..]) else {
@@ -329,13 +349,16 @@ impl<'a> Searcher<'a> {
                 let (_, line_end) = line_bounds(chunk, p + rel);
                 count += 1;
                 matched = true;
+                // Each line counts once: resume past this line's terminator.
+                p = line_end + 1;
+                self.session_last_match_end = chunk_off + p as u64;
                 if stop_at_first {
                     break 'outer;
                 }
-                // Each line counts once: resume past this line's terminator.
-                p = line_end + 1;
             }
         }
+
+        self.session_match_count = count;
 
         // `-l`/`-L` take precedence over `-c`, matching the line-at-a-time path.
         if self.config.quiet {
@@ -442,6 +465,7 @@ impl<'a> Searcher<'a> {
                 count += 1;
                 matched = true;
                 p = line_end + 1;
+                self.session_last_match_end = chunk_off + p as u64;
             }
 
             // Carry NUL detection and the line tally across the chunk boundary.
@@ -452,6 +476,8 @@ impl<'a> Searcher<'a> {
                 base_lines += nl_before + count_terminators(&chunk[nl_cursor..]);
             }
         }
+
+        self.session_match_count = count;
 
         if binary && notice_enabled && matched {
             self.writer.report_binary_match(path);
@@ -475,12 +501,16 @@ impl<'a> Searcher<'a> {
         self.session_after_remaining = 0;
         self.session_last_printed_line = 0;
         self.session_binary_detected = false;
+        self.session_last_match_end = 0;
         lb.reset();
 
         let mut line_number: u64 = 0;
 
         while let Some((line, line_start)) = lb.read_line(reader)? {
             line_number += 1;
+            // Offset of the next line. A final line without a terminator makes
+            // this one byte past the input, which reads the same as its end.
+            let after_line = line_start + line.len() as u64 + 1;
 
             // Handle `-U, --binary` On Windows.
             #[cfg(windows)]
@@ -503,6 +533,8 @@ impl<'a> Searcher<'a> {
                 {
                     return Ok(false);
                 }
+
+                self.session_last_match_end = after_line;
 
                 // Print the match and context, and update session state accordingly.
                 if !self.session_handle_match(path, line_number, line_start, line, &positions)? {
