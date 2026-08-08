@@ -194,6 +194,60 @@ fn unreadable_pattern_file_is_error() {
 }
 
 #[test]
+fn misspelled_character_class_is_error() {
+    // `[:digit:]` is almost certainly a typo for `[[:digit:]]`; GNU rejects it
+    // with exit 2 in the basic and extended syntaxes.
+    for args in [
+        &["[:digit:]"][..],
+        &["-E", "q[^:digit:]w"][..],
+        &["-E", "[:nosuchclass:]"][..],
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .fails_with_code(2)
+            .stderr_contains("character class syntax is [[:space:]], not [:space:]");
+    }
+
+    // Bracket expressions that only look similar stay valid.
+    for args in [
+        &["[[:digit:]]"][..],
+        &["[::]"][..],
+        &["-E", "[:digit]"][..],
+        &["-E", "[:dig-it:]"][..],
+        &["-F", "[:digit:]"][..],
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(args).pipe_in("w[:digit:]7d\n").succeeds();
+    }
+}
+
+#[test]
+fn max_count_rewinds_seekable_stdin() {
+    // -m stops mid-input after reading ahead. When standard input can seek,
+    // the unread remainder must be left in place for the next reader.
+    use std::fs::File;
+    use std::io::Read as _;
+    use std::process::{Command, Stdio};
+
+    let (scenario, _) = ucmd();
+    scenario.fixtures.write("lines", "a\nq\nb\nq\nc\n");
+    let mut input = File::open(scenario.fixtures.plus("lines")).unwrap();
+
+    // A dup of the descriptor shares its file offset with the child.
+    let status = Command::new(env!("CARGO_BIN_EXE_grep"))
+        .args(["-m1", "q"])
+        .stdin(Stdio::from(input.try_clone().unwrap()))
+        .stdout(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let mut rest = String::new();
+    input.read_to_string(&mut rest).unwrap();
+    assert_eq!(rest, "b\nq\nc\n");
+}
+
+#[test]
 fn quiet_match_overrides_file_error() {
     // With -q, a match makes grep exit 0 even if an earlier file could not be
     // opened. Without -q the missing file still yields exit 2, and -q with no
