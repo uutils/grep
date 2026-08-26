@@ -10,8 +10,12 @@
 # * uploads those artifacts to temporary workflow zip
 # * on success, uploads the artifacts to a GitHub Release
 #
-# Note that the GitHub Release will be created with a generated
-# title/body based on your changelogs.
+# The GitHub Release is always created as a *draft*: nothing is published to
+# users until the draft is reviewed and published by hand.
+#
+# Note that the GitHub Release will be created with a generated title/body
+# based on your changelogs. Re-running the workflow on the same tag overwrites
+# the files already attached to the draft.
 
 name: Release
 permissions:
@@ -70,6 +74,17 @@ jobs:
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/dist
+      # Refuse to release a tag that disagrees with the version in Cargo.toml.
+      - name: Check versions
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        shell: bash
+        run: |
+          tag=${GITHUB_REF#refs/tags/}
+          v=$(grep -m1 '^version' Cargo.toml | sed 's|version = "\(.*\)"|\1|')
+          if ! echo "$tag" | grep -q "$v"; then
+            echo "Version mismatch: Cargo.toml says $v while the tag is $tag"
+            exit 2
+          fi
       # sure would be cool if github gave us proper conditionals...
       # so here's a doubly-nested ternary-via-truthiness to try to provide the best possible
       # functionality based on whether this is a pull_request, and whether it's from a fork.
@@ -266,17 +281,25 @@ jobs:
         run: |
           # Remove the granular manifests
           rm -f artifacts/*-dist-manifest.json
-      - name: Create GitHub Release
+      - name: Write release notes
         env:
-          PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
-          ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
           ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
-          RELEASE_COMMIT: "${{ github.sha }}"
         run: |
-          # Write and read notes from a file to avoid quoting breaking things
-          echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
-
-          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          # Write notes to a file to avoid quoting breaking things
+          echo "$ANNOUNCEMENT_BODY" > "$RUNNER_TEMP/notes.txt"
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          overwrite_files: true
+          tag_name: ${{ needs.plan.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease }}
+          name: ${{ fromJson(steps.host.outputs.manifest).announcement_title }}
+          body_path: ${{ runner.temp }}/notes.txt
+          files: artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   announce:
     needs:
