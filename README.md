@@ -17,6 +17,11 @@ This project is an initial release and may contain bugs.
 cargo install uu_grep
 ```
 
+Or use [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) to install a pre-built binary:
+```shell
+cargo binstall uu_grep
+```
+
 ## 🚀 Try it online
 
 You can try `grep` directly in your browser on the [uutils playground](https://uutils.github.io/playground/).
