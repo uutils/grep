@@ -277,6 +277,11 @@ impl CompiledPattern {
             // GNU grep supports \` and \' as buffer anchors in BRE and ERE.
             syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_GNU_BUF_ANCHOR);
         }
+        if config.regex_mode == RegexMode::Basic {
+            // GNU grep supports \s and \S as extensions in BRE, like \w and \W.
+            // `Syntax::grep()` leaves them off, so they parse as literal s / S.
+            syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_S_WHITE_SPACE);
+        }
 
         if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended)
             && has_confusing_bracket(pattern.as_bytes())

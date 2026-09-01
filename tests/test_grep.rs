@@ -101,6 +101,30 @@ fn gnu_buffer_anchors() {
 }
 
 #[test]
+fn whitespace_escapes_in_basic_regexp() {
+    // GNU grep honors \s and \S in BRE as well as ERE, like \w and \W.
+    let input = "a b\nxy\n";
+
+    for args in [
+        vec![r"\s"],
+        vec!["-G", r"\s"],
+        vec!["-E", r"\s"],
+        vec!["-e", r"\s"],
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(&args).pipe_in(input).succeeds().stdout_only("a b\n");
+    }
+
+    for args in [vec![r"\S"], vec!["-G", r"\S"], vec!["-E", r"\S"]] {
+        let (_s, mut c) = ucmd();
+        c.args(&args)
+            .pipe_in(input)
+            .succeeds()
+            .stdout_only("a b\nxy\n");
+    }
+}
+
+#[test]
 fn ere_metacharacters() {
     let cases: &[(&[&str], &str, &str)] = &[
         (&["-E", "Hi|HI"], "Hi\nHI\nhi\n", "Hi\nHI\n"),
