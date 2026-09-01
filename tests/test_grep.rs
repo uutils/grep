@@ -675,6 +675,30 @@ fn empty_pattern_matches_every_line() {
 }
 
 #[test]
+fn inverted_empty_pattern_does_not_short_circuit_under_x_or_w() {
+    // Under `-x` the empty pattern matches only an empty line, and under `-w`
+    // only an empty match at a word boundary, so `-v` still selects the rest.
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "", "-x", "-v"])
+        .pipe_in("abc\ndef\n")
+        .succeeds()
+        .stdout_only("abc\ndef\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "", "-w", "-v"])
+        .pipe_in("abc\ndef\n")
+        .succeeds()
+        .stdout_only("abc\ndef\n");
+
+    // `-x` still drops the empty line itself.
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "", "-x", "-v"])
+        .pipe_in("abc\n\ndef\n")
+        .succeeds()
+        .stdout_only("abc\ndef\n");
+}
+
+#[test]
 fn inverted_empty_pattern_short_circuits() {
     // grep short-circuits without reading stdin at all, so the harness's write
     // races grep's exit and may fail with EPIPE.
