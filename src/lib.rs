@@ -844,6 +844,8 @@ pub fn uu_app() -> Command {
 }
 
 /// Expand GNU grep's `-NUM` shorthand to `-C NUM`.
+///
+/// Note that `-a12b` means `-a -C 12 -b`.
 fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
     const SHORT_OPTS_WITH_VALUE: &[u8] = b"efmABCDd";
     const LONG_OPTS_WITH_VALUE: &[&[u8]] = &[
@@ -864,13 +866,14 @@ fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
         b"group-separator",
     ];
 
-    fn consumes_next_arg(arg: &[u8]) -> bool {
-        if let Some(name) = arg.strip_prefix(b"-") {
-            LONG_OPTS_WITH_VALUE.contains(&name)
-        } else {
-            arg.last()
-                .is_some_and(|b| SHORT_OPTS_WITH_VALUE.contains(b))
-        }
+    // Rebuild a single option argument out of `prefix` and `bytes`.
+    fn option(prefix: &str, bytes: &[u8]) -> OsString {
+        let mut buf = Vec::with_capacity(prefix.len() + bytes.len());
+        buf.extend_from_slice(prefix.as_bytes());
+        buf.extend_from_slice(bytes);
+        // SAFETY: `bytes` is a subslice of an OsStr's encoded bytes
+        // that starts and ends on ASCII code point boundary.
+        unsafe { OsString::from_encoded_bytes_unchecked(buf) }
     }
 
     let mut out: Vec<OsString> = args.collect();
@@ -891,23 +894,56 @@ fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
             break;
         }
 
-        // This flag consumes two args. Skip both.
-        if consumes_next_arg(arg) {
-            i += 2;
+        // Skip --long options.
+        if let Some(name) = arg.strip_prefix(b"-") {
+            i += 1 + usize::from(LONG_OPTS_WITH_VALUE.contains(&name));
             continue;
         }
 
-        // Translate -NUM to -C NUM.
-        if !arg.is_empty() && arg.iter().all(u8::is_ascii_digit) {
-            // SAFETY: We know that all `arg` bytes are valid ASCII (digits).
-            let digits = unsafe { OsStr::from_encoded_bytes_unchecked(arg) }.to_owned();
-            out[i] = OsString::from("-C");
-            out.insert(i + 1, digits);
-            i += 2;
+        // Find the first byte that isn't a plain short option: a digit to
+        // translate, or a byte that claims the rest of the argument (an option
+        // taking a value like -ePATTERN, or something that's no option at all).
+        let Some(at) = arg
+            .iter()
+            .position(|b| b.is_ascii_digit() || !b.is_ascii() || SHORT_OPTS_WITH_VALUE.contains(b))
+        else {
+            // Plain short options only.
+            i += 1;
+            continue;
+        };
+
+        if !arg[at].is_ascii_digit() {
+            // Nothing to rewrite. A value option with nothing
+            // attached takes the next argument instead.
+            let consumes_next = at + 1 == arg.len() && SHORT_OPTS_WITH_VALUE.contains(&arg[at]);
+            i += 1 + usize::from(consumes_next);
             continue;
         }
 
-        i += 1;
+        // Translate -aNUMb to -a -C NUM -b. option() only deals with ASCII and
+        // we don't need to deal with anything else either, so the translation
+        // stops at the byte that claims the rest of the argument.
+        let end = arg[at..]
+            .iter()
+            .position(|b| !b.is_ascii() || SHORT_OPTS_WITH_VALUE.contains(b))
+            .map_or(arg.len(), |n| at + n);
+        let (options, rest) = arg.split_at(end);
+        let consumes_next = rest.len() == 1 && SHORT_OPTS_WITH_VALUE.contains(&rest[0]);
+        let mut expanded = Vec::with_capacity(options.len() + 1);
+
+        for chunk in options.chunk_by(|a, b| a.is_ascii_digit() == b.is_ascii_digit()) {
+            let prefix = if chunk[0].is_ascii_digit() { "-C" } else { "-" };
+            expanded.push(option(prefix, chunk));
+        }
+
+        // The tail holds the value option with its value, if any.
+        if !rest.is_empty() {
+            expanded.push(option("-", rest));
+        }
+
+        let len = expanded.len();
+        out.splice(i..=i, expanded);
+        i += len + usize::from(consumes_next);
     }
 
     out
