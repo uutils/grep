@@ -4,17 +4,10 @@
 // file that was distributed with this source code.
 
 use crate::{Config, RegexMode};
+use fancy_regex::{BytesMode, Regex, RegexBuilder};
 use memchr::memmem;
-use onig::{RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior, SyntaxOperator};
-use onig_sys::{
-    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
-};
-use std::ptr::{null, null_mut};
-use std::sync::Mutex;
 use uucore::error::{UResult, USimpleError};
 use uucore::show_warning;
-
-static ONIG_NEW_MUTEX: Mutex<()> = Mutex::new(());
 
 pub struct Matcher<'a> {
     config: &'a Config<'a>,
@@ -113,33 +106,46 @@ impl<'a> Matcher<'a> {
     }
 
     /// Word-boundary check `-w`.
-    /// NOTE that `-w` does not check both sides, unlike `\b` in a regex.
     /// Start/End-of-line count as non-words.
     fn is_word_match(line: &[u8], start: usize, end: usize) -> bool {
-        // SAFETY: This code uses OnigEncodingType such that it can support other types of encodings in the future.
-        unsafe {
-            let mbc_to_code = OnigEncodingUTF8.mbc_to_code.unwrap_unchecked();
-            let is_code_ctype = OnigEncodingUTF8.is_code_ctype.unwrap_unchecked();
-            let line_end = line.as_ptr().add(line.len());
-
-            if end < line.len() {
-                let cp = mbc_to_code(line.as_ptr().add(end), line_end);
-                if is_code_ctype(cp, OnigEncCtype_ONIGENC_CTYPE_WORD) != 0 {
+        if let Some(&line_end) = line.get(end) {
+            let next_char = match std::str::from_utf8(&line[end..]) {
+                Ok(s) => s.chars().next(),
+                Err(e) if e.valid_up_to() > 0 => {
+                    std::str::from_utf8(&line[end..end + e.valid_up_to()])
+                        .ok()
+                        .and_then(|s| s.chars().next())
+                }
+                Err(_) => None,
+            };
+            if let Some(c) = next_char {
+                if c.is_alphanumeric() || c == '_' {
                     return false;
                 }
+            } else if line_end.is_ascii_alphanumeric() || line_end == b'_' {
+                return false;
             }
-
-            if start > 0 {
-                let left_adjust = OnigEncodingUTF8.left_adjust_char_head.unwrap_unchecked();
-                let head = left_adjust(line.as_ptr(), line.as_ptr().add(start - 1));
-                let cp = mbc_to_code(head, line_end);
-                if is_code_ctype(cp, OnigEncCtype_ONIGENC_CTYPE_WORD) != 0 {
-                    return false;
-                }
-            }
-
-            true
         }
+
+        if start > 0 {
+            let mut i = start - 1;
+            while i > 0 && (line[i] & 0xC0) == 0x80 && start - i <= 4 {
+                i -= 1;
+            }
+            let prev_char = match std::str::from_utf8(&line[i..start]) {
+                Ok(s) => s.chars().last(),
+                Err(_) => None,
+            };
+            if let Some(c) = prev_char {
+                if c.is_alphanumeric() || c == '_' {
+                    return false;
+                }
+            } else if line[start - 1].is_ascii_alphanumeric() || line[start - 1] == b'_' {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -217,15 +223,10 @@ impl Cursor<'_> {
             self.pending = None;
             return;
         }
-        let Some((start, leftmost_end)) = self.pattern.search_leftmost(self.line, self.offset)
-        else {
+        let Some((start, end)) = self.pattern.search_leftmost(self.line, self.offset) else {
             self.pending = None;
             return;
         };
-        let end = self
-            .pattern
-            .longest_end_at(self.line, start)
-            .unwrap_or(leftmost_end);
         // Advance the next search past the match we just found.
         // Zero-length matches need a +1 nudge to avoid spinning forever.
         self.offset = end.max(start + 1);
@@ -235,49 +236,21 @@ impl Cursor<'_> {
 
 /// Return the literal bytes of `pattern` when a raw byte-for-byte substring
 /// search is *exactly* equivalent to matching it, otherwise `None`.
-///
-/// We accept only ASCII, case-sensitive needles. That keeps the byte search in
-/// agreement with the regex engine on every possible input, including bytes that
-/// are not valid UTF-8: an ASCII byte can never be part of a multi-byte sequence,
-/// so its presence is unambiguous. In the regex modes we also require that no
-/// byte could ever act as a metacharacter; under `-F` the text is literal as-is.
 fn plain_literal(pattern: &str, ignore_case: bool, mode: RegexMode) -> Option<Vec<u8>> {
     if ignore_case || pattern.is_empty() || !pattern.is_ascii() {
         return None;
     }
-    // Every byte that carries special meaning in any of our regex syntaxes.
-    // A needle without these reads the same as a literal in Basic/Extended/Perl.
     const SPECIAL: &[u8] = b".*[]^$\\+?{}()|";
     let plain = mode == RegexMode::Fixed || !pattern.bytes().any(|b| SPECIAL.contains(&b));
     plain.then(|| pattern.as_bytes().to_vec())
 }
 
 struct CompiledPattern {
-    /// Default semantics. It's decently fast and used for searching.
-    leftmost: OnigRegex,
-    /// Compiled with `FIND_LONGEST`. If used for a search, it'll search the
-    /// entire haystack to find the longest. This makes it unsuitable for searching,
-    /// but it's perfect for a second, anchored match pass for POSIX semantics.
-    longest_anchored: OnigRegex,
+    regex: Regex,
 }
 
 impl CompiledPattern {
     fn compile(pattern: &str, config: &Config) -> UResult<Self> {
-        let mut syntax = *match config.regex_mode {
-            RegexMode::Fixed => Syntax::asis(),
-            RegexMode::Basic => Syntax::grep(),
-            RegexMode::Extended => Syntax::gnu_regex(),
-            RegexMode::Perl => Syntax::perl_ng(),
-        };
-        if config.regex_mode != RegexMode::Fixed {
-            // GNU grep supports `{,n}` as an alias for `{0,n}`.
-            syntax.enable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_INTERVAL_LOW_ABBREV);
-        }
-        if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended) {
-            // GNU grep supports \` and \' as buffer anchors in BRE and ERE.
-            syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_GNU_BUF_ANCHOR);
-        }
-
         if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended)
             && has_confusing_bracket(pattern.as_bytes())
         {
@@ -298,221 +271,383 @@ impl CompiledPattern {
             pattern
         };
 
-        if config.regex_mode == RegexMode::Perl {
-            // GNU grep supports `(?P<name>...)`.
-            // Unfortunately, the onig crate defines the OP2 flag without the
-            // necessary <<32 bit shift, so we need to hotpatch that here.
-            const _: () =
-                assert!(SyntaxOperator::SYNTAX_OPERATOR_QMARK_CAPITAL_P_NAME.bits() == 0x80000000);
-            const FIXED: SyntaxOperator = SyntaxOperator::from_bits_retain(
-                SyntaxOperator::SYNTAX_OPERATOR_QMARK_CAPITAL_P_NAME.bits() << 32,
-            );
-            syntax.enable_operators(FIXED);
-        }
+        let transpiled = match config.regex_mode {
+            RegexMode::Fixed => fancy_regex::escape(pattern).into_owned(),
+            RegexMode::Basic => transpile_bre(pattern)?,
+            RegexMode::Extended => transpile_ere(pattern)?,
+            RegexMode::Perl => pattern.to_string(),
+        };
 
-        let mut options = RegexOptions::REGEX_OPTION_NONE;
+        let mut builder = RegexBuilder::new(&transpiled);
+        builder.oniguruma_mode(true);
+        builder.bytes_mode(BytesMode::UnicodeBytes);
+
         if config.ignore_case {
-            options |= RegexOptions::REGEX_OPTION_IGNORECASE;
+            builder.case_insensitive(true);
         }
         // In GNU grep's Basic/Extended modes, `-z` makes newline ordinary data
-        // for `.`, but PCRE keeps its existing non-DOTALL behavior. The GNU
-        // `pcre-context` test documents this as current behavior until PCRE2.
+        // for `.`, but PCRE keeps its existing non-DOTALL behavior.
         if config.null_data && matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended) {
-            options |= RegexOptions::REGEX_OPTION_MULTILINE;
+            builder.dot_matches_new_line(true);
         }
 
-        fn compile_with(
-            pattern: &str,
-            syntax: &Syntax,
-            options: RegexOptions,
-        ) -> UResult<OnigRegex> {
-            OnigRegex::compile(pattern, syntax, options).map_err(|err| {
-                // A reversed range like `[b-a]` is ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS.
-                // GNU grep reports it simply as "Invalid range end" (no pattern
-                // echoed), so translate this code to match its diagnostic.
-                let message = match err.code {
-                    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS => "Invalid range end".to_string(),
-                    _ => format!("invalid pattern \"{pattern}\": {}", err.message),
-                };
-                USimpleError::new(2, message)
-            })
-        }
+        let regex = builder.build().map_err(|err| {
+            let dbg = format!("{err:?}");
+            let message = if dbg.contains("ClassRangeInvalid")
+                || dbg.contains("character class range")
+                || dbg.contains("range out of order")
+                || dbg.contains("Invalid range end")
+            {
+                "Invalid range end".to_string()
+            } else {
+                format!("invalid pattern \"{pattern}\": {err}")
+            };
+            USimpleError::new(2, message)
+        })?;
 
-        let leftmost = compile_with(pattern, &syntax, options)?;
-        let longest_anchored = compile_with(
-            pattern,
-            &syntax,
-            options | RegexOptions::REGEX_OPTION_FIND_LONGEST,
-        )?;
-        Ok(Self {
-            leftmost,
-            longest_anchored,
-        })
+        Ok(Self { regex })
     }
 
     /// Find the leftmost match starting at or after `offset`.
     fn search_leftmost(&self, line: &[u8], offset: usize) -> Option<(usize, usize)> {
-        let mut region = Region::new();
-        self.leftmost.search(line, offset, Some(&mut region))?;
-        region.pos(0)
-    }
-
-    /// Given a known leftmost start `start`, return the longest extent
-    /// of a match anchored exactly there = POSIX leftmost-longest end.
-    fn longest_end_at(&self, line: &[u8], start: usize) -> Option<usize> {
-        let mut region = Region::new();
-        self.longest_anchored
-            .match_at(line, start, Some(&mut region));
-        region.pos(0).map(|(_, end)| end)
+        match self.regex.find_from_pos(line, offset) {
+            Ok(Some(m)) => Some((m.start(), m.end())),
+            _ => None,
+        }
     }
 
     /// True if any match exists in `line` (including zero-length).
     fn is_match(&self, line: &[u8]) -> bool {
-        self.leftmost.search(line, 0, None).is_some()
+        self.regex.is_match(line).unwrap_or(false)
     }
 }
 
-struct OnigRegex {
-    raw: onig_sys::OnigRegex,
+fn map_posix_class(name: &str) -> Option<&'static str> {
+    match name {
+        "alpha" => Some(r"\p{Alphabetic}"),
+        "lower" => Some(r"\p{Lowercase}"),
+        "upper" => Some(r"\p{Uppercase}"),
+        "alnum" => Some(r"\p{Alphabetic}0-9"),
+        "space" => Some(r"\p{White_Space}"),
+        "blank" => Some(r"\t\p{Zs}"),
+        "cntrl" => Some(r"\p{Control}"),
+        "digit" => Some("0-9"),
+        "xdigit" => Some("0-9A-Fa-f"),
+        "ascii" => Some(r"\x00-\x7F"),
+        "word" => Some(r"\w"),
+        "punct" => Some(r"\p{Punctuation}"),
+        "graph" => Some(r"\P{C}&&\P{Z}"),
+        "print" => Some(r"\P{C}"),
+        _ => None,
+    }
 }
 
-// SAFETY: Oniguruma compiled regexes are immutable after construction, and this
-// wrapper owns and frees the raw pointer exactly once. This mirrors `onig::Regex`.
-unsafe impl Send for OnigRegex {}
-// SAFETY: Searches only read the compiled regex. Capture storage is caller-owned
-// through `Region`, so sharing the compiled regex across threads is safe.
-unsafe impl Sync for OnigRegex {}
+/// Convert POSIX Basic Regular Expression (BRE) to standard regex syntax for fancy-regex.
+fn transpile_bre(pattern: &str) -> UResult<String> {
+    let mut output = String::with_capacity(pattern.len() * 2);
+    let mut chars = pattern.chars().peekable();
+    let mut in_bracket = false;
 
-impl OnigRegex {
-    fn compile(pattern: &str, syntax: &Syntax, options: RegexOptions) -> Result<Self, OnigError> {
-        let pattern = pattern.as_bytes();
-        let mut raw = null_mut();
-        let mut error = onig_sys::OnigErrorInfo {
-            enc: null_mut(),
-            par: null_mut(),
-            par_end: null_mut(),
-        };
-        // SAFETY: This reads Oniguruma's process default case-folding bitset.
-        let mut case_fold_flag = unsafe { onig_sys::onig_get_default_case_fold_flag() };
-        if options.contains(RegexOptions::REGEX_OPTION_IGNORECASE) {
-            case_fold_flag &= !onig_sys::INTERNAL_ONIGENC_CASE_FOLD_MULTI_CHAR;
+    while let Some(ch) = chars.next() {
+        if in_bracket {
+            if ch == '[' && chars.peek() == Some(&':') {
+                chars.next();
+                let mut name = String::new();
+                let mut closed = false;
+                while let Some(c) = chars.next() {
+                    if c == ':' && chars.peek() == Some(&']') {
+                        chars.next();
+                        closed = true;
+                        break;
+                    }
+                    name.push(c);
+                }
+                if closed {
+                    if let Some(unicode_class) = map_posix_class(&name) {
+                        output.push_str(unicode_class);
+                        continue;
+                    } else {
+                        return Err(USimpleError::new(
+                            2,
+                            "invalid character class name".to_string(),
+                        ));
+                    }
+                } else {
+                    output.push_str("[:");
+                    output.push_str(&name);
+                    continue;
+                }
+            }
+            if ch == ']' && output.ends_with(|c| c != '\\' && c != '[' && c != '^') {
+                in_bracket = false;
+            }
+            output.push(ch);
+            continue;
+        } else if ch == '[' {
+            in_bracket = true;
+            output.push(ch);
+            continue;
+        } else if ch != '\\' {
+            match ch {
+                '+' | '?' | '|' | '(' | ')' | '{' | '}' => {
+                    output.push('\\');
+                    output.push(ch);
+                }
+                '*' => {
+                    if output.is_empty()
+                        || output.ends_with('(')
+                        || output.ends_with('|')
+                        || output.ends_with('^')
+                    {
+                        output.push_str(r"\*");
+                    } else {
+                        output.push('*');
+                    }
+                }
+                '^' => {
+                    if output.is_empty() || output.ends_with('(') || output.ends_with('|') {
+                        output.push('^');
+                    } else {
+                        output.push_str(r"\^");
+                    }
+                }
+                '$' => {
+                    let is_anchor = chars.peek().is_none()
+                        || (chars.peek() == Some(&'\\')
+                            && (chars.clone().nth(1) == Some(')')
+                                || chars.clone().nth(1) == Some('|')));
+                    if is_anchor {
+                        output.push('$');
+                    } else {
+                        output.push_str(r"\$");
+                    }
+                }
+                _ => output.push(ch),
+            }
+            continue;
         }
 
-        let mut compile_info = onig_sys::OnigCompileInfo {
-            num_of_elements: 5,
-            pattern_enc: &raw mut OnigEncodingUTF8,
-            target_enc: &raw mut OnigEncodingUTF8,
-            syntax: syntax as *const Syntax as *mut Syntax as *mut onig_sys::OnigSyntaxType,
-            option: options.bits(),
-            case_fold_flag,
-        };
-
-        let _guard = ONIG_NEW_MUTEX.lock().unwrap();
-        // SAFETY: `pattern` supplies a valid start/end pointer pair for the
-        // duration of the call, and `compile_info` uses Oniguruma's built-in
-        // UTF-8 encoding plus a syntax value borrowed from the safe wrapper.
-        let result = unsafe {
-            onig_sys::onig_new_deluxe(
-                &mut raw,
-                pattern.as_ptr(),
-                pattern.as_ptr().add(pattern.len()),
-                &mut compile_info,
-                &mut error,
-            )
-        };
-        if result == onig_sys::ONIG_NORMAL as i32 {
-            Ok(Self { raw })
-        } else {
-            Err(OnigError::new(result, &error))
+        match chars.next() {
+            Some('{') => {
+                output.push('{');
+                if chars.peek() == Some(&',') {
+                    output.push('0');
+                }
+            }
+            Some(c) if "()}|+?".contains(c) => output.push(c),
+            Some('`') => output.push_str(r"\A"),
+            Some('\'') => output.push_str(r"\z"),
+            Some('<') => output.push_str(r"\b(?=\w)"),
+            Some('>') => output.push_str(r"(?<=\w)\b"),
+            Some(c) => {
+                output.push('\\');
+                output.push(c);
+            }
+            None => {
+                output.push('\\');
+            }
         }
     }
 
-    fn search(&self, line: &[u8], offset: usize, region: Option<&mut Region>) -> Option<usize> {
-        debug_assert!(offset <= line.len());
-        // SAFETY: `offset` is bounded by `line.len()`, all byte pointers are
-        // derived from `line`, and `region_ptr` preserves `onig::Region`'s
-        // transparent representation over `OnigRegion`.
-        let result = unsafe {
-            let start = line.as_ptr().add(offset);
-            let end = line.as_ptr().add(line.len());
-            onig_sys::onig_search(
-                self.raw,
-                line.as_ptr(),
-                end,
-                start,
-                end,
-                region_ptr(region),
-                SearchOptions::SEARCH_OPTION_NONE.bits(),
-            )
-        };
-        onig_match_result(result)
-    }
-
-    fn match_at(&self, line: &[u8], offset: usize, region: Option<&mut Region>) -> Option<usize> {
-        debug_assert!(offset <= line.len());
-        // SAFETY: `offset` is bounded by `line.len()`, all byte pointers are
-        // derived from `line`, and `region_ptr` preserves `onig::Region`'s
-        // transparent representation over `OnigRegion`.
-        let result = unsafe {
-            let at = line.as_ptr().add(offset);
-            onig_sys::onig_match(
-                self.raw,
-                line.as_ptr(),
-                line.as_ptr().add(line.len()),
-                at,
-                region_ptr(region),
-                SearchOptions::SEARCH_OPTION_NONE.bits(),
-            )
-        };
-        onig_match_result(result)
-    }
+    Ok(sort_alternation_branches(&output))
 }
 
-impl Drop for OnigRegex {
-    fn drop(&mut self) {
-        // SAFETY: `raw` was returned by a successful `onig_new_deluxe` call and
-        // is owned by this wrapper.
-        unsafe { onig_sys::onig_free(self.raw) }
-    }
-}
+/// Convert POSIX Extended Regular Expression (ERE) with GNU extensions to standard syntax.
+fn transpile_ere(pattern: &str) -> UResult<String> {
+    let mut output = String::with_capacity(pattern.len() * 2);
+    let mut chars = pattern.chars().peekable();
+    let mut in_bracket = false;
 
-struct OnigError {
-    code: i32,
-    message: String,
-}
+    while let Some(ch) = chars.next() {
+        if in_bracket {
+            if ch == '[' && chars.peek() == Some(&':') {
+                chars.next();
+                let mut name = String::new();
+                let mut closed = false;
+                while let Some(c) = chars.next() {
+                    if c == ':' && chars.peek() == Some(&']') {
+                        chars.next();
+                        closed = true;
+                        break;
+                    }
+                    name.push(c);
+                }
+                if closed {
+                    if let Some(unicode_class) = map_posix_class(&name) {
+                        output.push_str(unicode_class);
+                        continue;
+                    } else {
+                        return Err(USimpleError::new(
+                            2,
+                            "invalid character class name".to_string(),
+                        ));
+                    }
+                } else {
+                    output.push_str("[:");
+                    output.push_str(&name);
+                    continue;
+                }
+            }
+            if ch == ']' && output.ends_with(|c| c != '\\' && c != '[' && c != '^') {
+                in_bracket = false;
+            }
+            output.push(ch);
+            continue;
+        } else if ch == '[' {
+            in_bracket = true;
+            output.push(ch);
+            continue;
+        } else if ch != '\\' {
+            if ch == '{' && chars.peek() == Some(&',') {
+                output.push_str("{0,");
+                chars.next();
+                continue;
+            }
+            output.push(ch);
+            continue;
+        }
 
-impl OnigError {
-    fn new(code: i32, info: *const onig_sys::OnigErrorInfo) -> Self {
-        Self {
-            code,
-            message: onig_error_message(code, info),
+        match chars.next() {
+            Some('`') => output.push_str(r"\A"),
+            Some('\'') => output.push_str(r"\z"),
+            Some('<') => output.push_str(r"\b(?=\w)"),
+            Some('>') => output.push_str(r"(?<=\w)\b"),
+            Some(c) => {
+                output.push('\\');
+                output.push(c);
+            }
+            None => output.push('\\'),
         }
     }
+
+    Ok(sort_alternation_branches(&output))
 }
 
-fn region_ptr(region: Option<&mut Region>) -> *mut onig_sys::OnigRegion {
-    region.map_or(null_mut(), |r| {
-        r as *mut Region as *mut onig_sys::OnigRegion
-    })
+/// Sort alternation branches by descending length so that leftmost-first engines
+/// match the longest alternative first (POSIX leftmost-longest semantics).
+fn sort_alternation_branches(pattern: &str) -> String {
+    if !pattern.contains('|') {
+        return pattern.to_string();
+    }
+
+    let chars: Vec<char> = pattern.chars().collect();
+    sort_subexpr(&chars, 0, chars.len())
 }
 
-fn onig_match_result(result: i32) -> Option<usize> {
-    if result >= 0 {
-        Some(result as usize)
-    } else if result == onig_sys::ONIG_MISMATCH {
-        None
+fn sort_subexpr(chars: &[char], start: usize, end: usize) -> String {
+    let mut branches: Vec<String> = Vec::new();
+    let mut current_branch = String::new();
+    let mut i = start;
+    let mut in_bracket = false;
+    let mut bracket_start = 0;
+
+    while i < end {
+        let ch = chars[i];
+        if ch == '\\' {
+            if i + 1 < end {
+                current_branch.push('\\');
+                current_branch.push(chars[i + 1]);
+                i += 2;
+                continue;
+            } else {
+                current_branch.push('\\');
+                i += 1;
+                continue;
+            }
+        }
+
+        if in_bracket {
+            current_branch.push(ch);
+            if ch == ']' && i != bracket_start {
+                in_bracket = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if ch == '[' {
+            in_bracket = true;
+            current_branch.push(ch);
+            i += 1;
+            bracket_start = i;
+            if i < end && chars[i] == '^' {
+                current_branch.push('^');
+                i += 1;
+                bracket_start = i;
+            }
+            continue;
+        }
+
+        if ch == '(' {
+            let group_start = i + 1;
+            let mut depth = 1;
+            let mut j = i + 1;
+            let mut b_in_bracket = false;
+            let mut b_bracket_start = 0;
+            while j < end && depth > 0 {
+                if chars[j] == '\\' {
+                    j += 2;
+                    continue;
+                }
+                if b_in_bracket {
+                    if chars[j] == ']' && j != b_bracket_start {
+                        b_in_bracket = false;
+                    }
+                    j += 1;
+                    continue;
+                }
+                if chars[j] == '[' {
+                    b_in_bracket = true;
+                    j += 1;
+                    b_bracket_start = j;
+                    if j < end && chars[j] == '^' {
+                        j += 1;
+                        b_bracket_start = j;
+                    }
+                    continue;
+                }
+                if chars[j] == '(' {
+                    depth += 1;
+                } else if chars[j] == ')' {
+                    depth -= 1;
+                }
+                j += 1;
+            }
+
+            if depth == 0 {
+                let group_end = j - 1;
+                let inner = sort_subexpr(chars, group_start, group_end);
+                current_branch.push('(');
+                current_branch.push_str(&inner);
+                current_branch.push(')');
+                i = j;
+                continue;
+            } else {
+                current_branch.push('(');
+                i += 1;
+                continue;
+            }
+        }
+
+        if ch == '|' {
+            branches.push(current_branch);
+            current_branch = String::new();
+            i += 1;
+            continue;
+        }
+
+        current_branch.push(ch);
+        i += 1;
+    }
+
+    branches.push(current_branch);
+
+    if branches.len() > 1 {
+        branches.sort_by_key(|a| std::cmp::Reverse(a.len()));
+        branches.join("|")
     } else {
-        panic!(
-            "Onig: Regex match error: {}",
-            onig_error_message(result, null())
-        );
+        branches.pop().unwrap_or_default()
     }
-}
-
-fn onig_error_message(code: i32, info: *const onig_sys::OnigErrorInfo) -> String {
-    let mut buff = [0; onig_sys::ONIG_MAX_ERROR_MESSAGE_LEN as usize];
-    let len = unsafe { onig_sys::onig_error_code_to_str(buff.as_mut_ptr(), code, info) };
-    String::from_utf8_lossy(&buff[..len as usize]).into_owned()
 }
 
 fn strip_leading_repeat_operator(pattern: &str) -> Option<(&'static str, &str)> {
@@ -693,5 +828,39 @@ mod tests {
         ] {
             assert!(!has_confusing_bracket(p.as_bytes()), "pattern {p:?}");
         }
+    }
+
+    #[test]
+    fn test_has_invalid_char_class() {
+        assert!(super::transpile_ere("[[:notdef:]]").is_err());
+        assert!(super::transpile_ere("[[:digit:]]").is_ok());
+        assert!(super::transpile_ere("[[:alpha:]]+").is_ok());
+    }
+
+    #[test]
+    fn test_transpile_bre_basics() {
+        assert_eq!(
+            super::transpile_bre("a+b|c(d){e}").unwrap(),
+            r"a\+b\|c\(d\)\{e\}"
+        );
+        assert_eq!(super::transpile_bre(r"o\+").unwrap(), "o+");
+        assert_eq!(super::transpile_bre(r"Hi\|HI").unwrap(), "Hi|HI");
+        assert_eq!(super::transpile_bre(r"a\{2,3\}").unwrap(), "a{2,3}");
+        assert_eq!(super::transpile_bre(r"a\{,3\}").unwrap(), "a{0,3}");
+        assert_eq!(
+            super::transpile_bre(r"\(\b\w\+\b\) \1").unwrap(),
+            r"(\b\w+\b) \1"
+        );
+        assert_eq!(super::transpile_bre("*foo").unwrap(), r"\*foo");
+        assert_eq!(super::transpile_bre(r"\`c\|r\'").unwrap(), r"\Ac|r\z");
+    }
+
+    #[test]
+    fn test_transpile_ere_alternations() {
+        assert_eq!(
+            super::transpile_ere("foo|foobar|foobarbaz").unwrap(),
+            "foobarbaz|foobar|foo"
+        );
+        assert_eq!(super::transpile_ere(r"\`c|r\'").unwrap(), r"\Ac|r\z");
     }
 }

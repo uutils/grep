@@ -430,6 +430,12 @@ fn posix_character_classes() {
         .stdout_only("42\nx9y\n");
 
     let (_s, mut c) = ucmd();
+    c.args(&["[[:alpha:]]"])
+        .pipe_in("é\n")
+        .succeeds()
+        .stdout_only("é\n");
+
+    let (_s, mut c) = ucmd();
     c.args(&["-E", "[[:notdef:]]"]).fails_with_code(2);
 }
 
