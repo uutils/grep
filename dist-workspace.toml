@@ -2,7 +2,7 @@
 members = ["cargo:."]
 
 [dist]
-cargo-dist-version = "0.32.0"
+cargo-dist-version = "0.33.0"
 ci = "github"
 installers = []
 # release.yml is hand-edited (publishing is opt-in); keep `dist` from clobbering it
