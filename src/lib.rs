@@ -445,8 +445,15 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     }
 
     // An empty pattern matches every line; with `-v`, GNU grep selects no lines
-    // and exits as "no match" without reading any input files.
-    if invert_match && patterns.iter().any(|pattern| pattern.is_empty()) {
+    // and exits as "no match" without reading any input files. This does not
+    // hold under `-x` or `-w`, where an empty pattern matches only an empty
+    // line or an empty match at a word boundary, so the inversion still selects
+    // the remaining lines and the input has to be read.
+    if invert_match
+        && !word_regexp
+        && !line_regexp
+        && patterns.iter().any(|pattern| pattern.is_empty())
+    {
         return Err(ExitCode::new(1));
     }
 
