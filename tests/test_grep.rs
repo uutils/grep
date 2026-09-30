@@ -1354,6 +1354,25 @@ fn color_line_number_uses_green() {
 }
 
 #[test]
+fn color_count_colors_file_name_and_separator() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("a", "foo\nfoo\n");
+    scene.fixtures.write("b", "bar\n");
+    c.args(&["--color=always", "-c", "foo", "a", "b"])
+        .succeeds()
+        .stdout_only(
+            "\x1b[35m\x1b[Ka\x1b[m\x1b[K\x1b[36m\x1b[K:\x1b[m\x1b[K2\n\
+             \x1b[35m\x1b[Kb\x1b[m\x1b[K\x1b[36m\x1b[K:\x1b[m\x1b[K0\n",
+        );
+
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("a", "foo\nfoo\n");
+    c.args(&["--color=always", "-c", "--null", "-H", "foo", "a"])
+        .succeeds()
+        .stdout_only("\x1b[35m\x1b[Ka\x1b[m\x1b[K\x002\n");
+}
+
+#[test]
 fn color_with_ignore_case_preserves_original_text() {
     let (_s, mut c) = ucmd();
     c.args(&["--color=always", "-i", "word"])

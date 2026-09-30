@@ -173,12 +173,15 @@ impl<'a> OutputWriter<'a> {
     /// Write the count line for `-c` mode.
     pub fn write_count(&mut self, count: u64, filename: &Path) -> io::Result<()> {
         if self.config.show_filename {
-            let sep = if self.config.null_separator {
-                b'\0'
+            self.write_colored_fmt(
+                self.config.color_config.filename,
+                format_args!("{}", filename.display()),
+            )?;
+            if self.config.null_separator {
+                self.out.write_all(b"\0")?;
             } else {
-                b':'
-            };
-            write!(self.out, "{}{}", filename.display(), sep as char)?;
+                self.write_separator(b':')?;
+            }
         }
 
         writeln!(self.out, "{}", count)?;
