@@ -1,4 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
+use uutests::util::TerminalSimulation;
 use uutests::util::{TestScenario, UCommand};
 
 static UCMD_INIT: AtomicBool = AtomicBool::new(false);
@@ -1255,6 +1257,56 @@ fn color_never_emits_no_escapes() {
         .pipe_in("foo\n")
         .succeeds()
         .stdout_only("foo\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn color_is_off_on_a_terminal_without_color_option() {
+    for term in [None, Some("xterm")] {
+        let (_s, mut c) = ucmd();
+        if let Some(term) = term {
+            c.env("TERM", term);
+        }
+        c.terminal_sim_stdio(TerminalSimulation {
+            stdout: true,
+            ..Default::default()
+        })
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .no_stderr()
+        .normalized_newlines_stdout_is("foo\n");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn color_auto_on_a_terminal_needs_term_not_dumb() {
+    // Guard against treating empty TERM or "DUMB" as "dumb".
+    let colored = "\x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\n";
+    for (term, expected) in [
+        (None, "foo\n"),
+        (Some("dumb"), "foo\n"),
+        (Some(""), colored),
+        (Some("DUMB"), colored),
+        (Some("xterm"), colored),
+    ] {
+        for option in ["--color", "--color=auto"] {
+            let (_s, mut c) = ucmd();
+            if let Some(term) = term {
+                c.env("TERM", term);
+            }
+            c.terminal_sim_stdio(TerminalSimulation {
+                stdout: true,
+                ..Default::default()
+            })
+            .args(&[option, "foo"])
+            .pipe_in("foo\n")
+            .succeeds()
+            .no_stderr()
+            .normalized_newlines_stdout_is(expected);
+        }
+    }
 }
 
 #[test]

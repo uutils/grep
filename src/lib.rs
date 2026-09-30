@@ -320,8 +320,9 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     };
     let color = match color {
         "always" => ColorMode::Always,
-        "never" => ColorMode::Never,
-        _ => ColorMode::Auto,
+        "auto" => ColorMode::Auto,
+        // Color output requires an explicit --color option.
+        _ => ColorMode::Never,
     };
     let (before_context, after_context, has_context) = {
         // "-o" overrides any context arguments
@@ -384,7 +385,14 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let use_color = match color {
         ColorMode::Always => true,
         ColorMode::Never => false,
-        ColorMode::Auto => std::io::stdout().is_terminal(),
+        // On Windows, an unset TERM allows color support, matching anstyle-query.
+        ColorMode::Auto => {
+            std::io::stdout().is_terminal()
+                && match std::env::var_os("TERM") {
+                    Some(term) => term != "dumb",
+                    None => cfg!(windows),
+                }
+        }
     };
     // GNU grep treats GREP_COLOR as deprecated: when it is set and color output
     // is active, warn and point users at the GREP_COLORS 'mt' capability.
