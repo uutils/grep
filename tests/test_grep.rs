@@ -101,6 +101,44 @@ fn gnu_buffer_anchors() {
 }
 
 #[test]
+fn posix_equivalence_classes() {
+    // In the C locale `[[=a=]]` is equivalent to `[a]`.
+    let input = "a\nb\nc\n";
+
+    for args in [vec!["[[=a=]]"], vec!["-E", "[[=a=]]"], vec!["a[[=a=]]*"]] {
+        let (_s, mut c) = ucmd();
+        c.args(&args).pipe_in(input).succeeds().stdout_only("a\n");
+    }
+
+    // The class must not poison the rest of the bracket expression.
+    for args in [
+        vec!["[[=a=]b]"],
+        vec!["[b[=a=]]"],
+        vec!["[[=a=][=b=]]"],
+        vec!["-E", "[[=a=]b]"],
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(&args)
+            .pipe_in(input)
+            .succeeds()
+            .stdout_only("a\nb\n");
+    }
+
+    let (_s, mut c) = ucmd();
+    c.args(&["[^[=a=]]"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("b\nc\n");
+
+    // `-F` takes the whole thing literally.
+    let (_s, mut c) = ucmd();
+    c.args(&["-F", "[[=a=]]"])
+        .pipe_in("[[=a=]]\na\n")
+        .succeeds()
+        .stdout_only("[[=a=]]\n");
+}
+
+#[test]
 fn ere_metacharacters() {
     let cases: &[(&[&str], &str, &str)] = &[
         (&["-E", "Hi|HI"], "Hi\nHI\nhi\n", "Hi\nHI\n"),
