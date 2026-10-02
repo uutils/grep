@@ -1222,6 +1222,86 @@ fn group_separator_behavior() {
 }
 
 #[test]
+fn context_groups_are_separated_across_files() {
+    let (scene, _) = ucmd();
+    scene.fixtures.write("first", "hit\nno\nno\nhit\n");
+    scene.fixtures.write("second", "hit\n");
+    scene.fixtures.write("b", "hit three\nno\nfar\nhit four\n");
+    scene.fixtures.write("c", "no\nhit five\n");
+    scene.fixtures.write("d", "nothing\n");
+
+    scene
+        .cmd(env!("CARGO_BIN_EXE_grep"))
+        .args(&["-n", "-C0", "hit", "first", "second"])
+        .succeeds()
+        .stdout_only("first:1:hit\n--\nfirst:4:hit\n--\nsecond:1:hit\n");
+
+    scene
+        .cmd(env!("CARGO_BIN_EXE_grep"))
+        .args(&["-n", "-C1", "hit", "b", "c"])
+        .succeeds()
+        .stdout_only("b:1:hit three\nb-2-no\nb-3-far\nb:4:hit four\n--\nc-1-no\nc:2:hit five\n");
+
+    scene
+        .cmd(env!("CARGO_BIN_EXE_grep"))
+        .args(&["-n", "-C0", "hit", "d", "first"])
+        .succeeds()
+        .stdout_only("first:1:hit\n--\nfirst:4:hit\n");
+
+    scene
+        .cmd(env!("CARGO_BIN_EXE_grep"))
+        .args(&["-n", "-C0", "hit", "first", "d", "second"])
+        .succeeds()
+        .stdout_only("first:1:hit\n--\nfirst:4:hit\n--\nsecond:1:hit\n");
+}
+
+#[test]
+fn context_group_separator_options_across_files() {
+    let (scene, _) = ucmd();
+    scene.fixtures.write("first", "hit\nno\nno\nhit\n");
+    scene.fixtures.write("second", "hit\n");
+
+    scene
+        .cmd(env!("CARGO_BIN_EXE_grep"))
+        .args(&[
+            "-n",
+            "-C0",
+            "--no-group-separator",
+            "hit",
+            "first",
+            "second",
+        ])
+        .succeeds()
+        .stdout_only("first:1:hit\nfirst:4:hit\nsecond:1:hit\n");
+
+    scene
+        .cmd(env!("CARGO_BIN_EXE_grep"))
+        .args(&["-n", "-C0", "--group-separator=X", "hit", "first", "second"])
+        .succeeds()
+        .stdout_only("first:1:hit\nX\nfirst:4:hit\nX\nsecond:1:hit\n");
+}
+
+#[test]
+fn recursive_context_groups_are_separated_across_files() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.mkdir("tree-a");
+    scene.fixtures.mkdir("tree-b");
+    scene.fixtures.write("tree-a/one", "hit\n");
+    scene.fixtures.write("tree-b/two", "hit\n");
+    let first = std::path::Path::new("tree-a").join("one");
+    let second = std::path::Path::new("tree-b").join("two");
+    let expected = format!(
+        "{}:1:hit\n--\n{}:1:hit\n",
+        first.display(),
+        second.display()
+    );
+
+    c.args(&["-r", "-n", "-C0", "hit", "tree-a", "tree-b"])
+        .succeeds()
+        .stdout_only(&expected);
+}
+
+#[test]
 fn adjacent_context_groups_do_not_get_separator() {
     let (_s, mut c) = ucmd();
     c.args(&["-e", ".", "-B", "2"])
