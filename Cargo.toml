@@ -43,6 +43,10 @@ harness = false
 criterion = { version = "5.0.0", package = "codspeed-criterion-compat" }
 uutests = "0.12.0"
 
+[profile.release]
+lto = "fat"
+panic = "abort"
+codegen-units = 1
+
 [profile.dist]
 inherits = "release"
-lto = "fat"
