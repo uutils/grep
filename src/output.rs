@@ -130,15 +130,7 @@ impl<'a> OutputWriter<'a> {
         content_empty: bool,
     ) -> io::Result<()> {
         if self.config.show_filename {
-            self.write_colored_fmt(
-                self.config.color_config.filename,
-                format_args!("{}", filename.display()),
-            )?;
-            if self.config.null_separator {
-                self.out.write_all(b"\0")?;
-            } else {
-                self.write_separator(sep_char)?;
-            }
+            self.write_filename_and_separator(filename, sep_char)?;
         }
 
         if self.config.line_number {
@@ -170,18 +162,22 @@ impl<'a> OutputWriter<'a> {
         Ok(())
     }
 
+    fn write_filename_and_separator(&mut self, filename: &Path, sep_char: u8) -> io::Result<()> {
+        self.write_colored_fmt(
+            self.config.color_config.filename,
+            format_args!("{}", filename.display()),
+        )?;
+        if self.config.null_separator {
+            self.out.write_all(b"\0")
+        } else {
+            self.write_separator(sep_char)
+        }
+    }
+
     /// Write the count line for `-c` mode.
     pub fn write_count(&mut self, count: u64, filename: &Path) -> io::Result<()> {
         if self.config.show_filename {
-            self.write_colored_fmt(
-                self.config.color_config.filename,
-                format_args!("{}", filename.display()),
-            )?;
-            if self.config.null_separator {
-                self.out.write_all(b"\0")?;
-            } else {
-                self.write_separator(b':')?;
-            }
+            self.write_filename_and_separator(filename, b':')?;
         }
 
         writeln!(self.out, "{}", count)?;
