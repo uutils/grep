@@ -1261,27 +1261,7 @@ fn color_never_emits_no_escapes() {
 
 #[cfg(unix)]
 #[test]
-fn color_is_off_on_a_terminal_without_color_option() {
-    for term in [None, Some("xterm")] {
-        let (_s, mut c) = ucmd();
-        if let Some(term) = term {
-            c.env("TERM", term);
-        }
-        c.terminal_sim_stdio(TerminalSimulation {
-            stdout: true,
-            ..Default::default()
-        })
-        .arg("foo")
-        .pipe_in("foo\n")
-        .succeeds()
-        .no_stderr()
-        .normalized_newlines_stdout_is("foo\n");
-    }
-}
-
-#[cfg(unix)]
-#[test]
-fn color_auto_on_a_terminal_needs_term_not_dumb() {
+fn color_on_a_terminal_needs_option_and_term_not_dumb() {
     // Guard against treating empty TERM or "DUMB" as "dumb".
     let colored = "\x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\n";
     for (term, expected) in [
@@ -1291,20 +1271,23 @@ fn color_auto_on_a_terminal_needs_term_not_dumb() {
         (Some("DUMB"), colored),
         (Some("xterm"), colored),
     ] {
-        for option in ["--color", "--color=auto"] {
+        for option in [None, Some("--color"), Some("--color=auto")] {
             let (_s, mut c) = ucmd();
             if let Some(term) = term {
                 c.env("TERM", term);
+            }
+            if let Some(option) = option {
+                c.arg(option);
             }
             c.terminal_sim_stdio(TerminalSimulation {
                 stdout: true,
                 ..Default::default()
             })
-            .args(&[option, "foo"])
+            .arg("foo")
             .pipe_in("foo\n")
             .succeeds()
             .no_stderr()
-            .normalized_newlines_stdout_is(expected);
+            .normalized_newlines_stdout_is(if option.is_some() { expected } else { "foo\n" });
         }
     }
 }
