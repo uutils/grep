@@ -1224,6 +1224,40 @@ fn group_separator_behavior() {
 }
 
 #[test]
+fn context_groups_are_separated_across_files() {
+    let (scene, _) = ucmd();
+    scene.fixtures.write("first", "hit\nno\nno\nhit\n");
+    scene.fixtures.write("second", "hit\n");
+    scene.fixtures.write("leading", "no\nhit\n");
+    scene.fixtures.write("miss", "no\n");
+    scene.fixtures.write_bytes("binary", b"hit\0\n");
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-n", "-C", "0", "hit", "first", "second"])
+        .succeeds()
+        .stdout_only("first:1:hit\n--\nfirst:4:hit\n--\nsecond:1:hit\n");
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-n", "-C", "1", "hit", "first", "leading"])
+        .succeeds()
+        .stdout_only(
+            "first:1:hit\nfirst-2-no\nfirst-3-no\nfirst:4:hit\n--\nleading-1-no\nleading:2:hit\n",
+        );
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-n", "-C", "0", "hit", "first", "miss", "second"])
+        .succeeds()
+        .stdout_only("first:1:hit\n--\nfirst:4:hit\n--\nsecond:1:hit\n");
+
+    // The match in "binary" is selected even though it is not printed.
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-n", "-C", "0", "hit", "binary", "second"])
+        .succeeds()
+        .stdout_is("--\nsecond:1:hit\n")
+        .stderr_contains("binary file matches");
+}
+
+#[test]
 fn adjacent_context_groups_do_not_get_separator() {
     let (_s, mut c) = ucmd();
     c.args(&["-e", ".", "-B", "2"])
