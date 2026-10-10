@@ -1591,7 +1591,7 @@ fn recursive_exclude_from_file() {
         .stdout_does_not_contain("b.log");
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "cygwin")))]
 #[test]
 fn dereference_recursive_follows_symlinks() {
     use std::os::unix::fs::symlink;
