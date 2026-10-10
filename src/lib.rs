@@ -140,8 +140,16 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let args = expand_num_shorthand(args);
     let matches = uucore::clap_localization::handle_clap_result_with_exit_code(uu_app(), args, 2)?;
 
-    let grep_color = std::env::var("GREP_COLOR").unwrap_or_default();
-    let grep_colors = std::env::var("GREP_COLORS").unwrap_or_default();
+    // GNU grep ignores a malformed legacy match color without a warning.
+    let grep_color = std::env::var("GREP_COLOR")
+        .ok()
+        .filter(|value| is_color_value(value))
+        .unwrap_or_default();
+    // Decode lossily to preserve valid entries; replacement characters cannot
+    // match capability names or pass color-value validation.
+    let grep_colors = std::env::var_os("GREP_COLORS")
+        .map(|colors| colors.to_string_lossy().into_owned())
+        .unwrap_or_default();
 
     let patterns_or_files: Vec<_> = matches
         .get_many::<OsString>("patterns_or_files")
@@ -996,6 +1004,10 @@ impl GlobSet {
     }
 }
 
+fn is_color_value(value: &str) -> bool {
+    value.bytes().all(|b| b.is_ascii_digit() || b == b';')
+}
+
 impl<'a> ColorConfig<'a> {
     fn from_env(grep_color: &'a str, grep_colors: &'a str) -> Self {
         let mut config = Self {
@@ -1016,8 +1028,13 @@ impl<'a> ColorConfig<'a> {
             config.matched_context = grep_color;
         }
 
+        // GNU grep retains prior settings and stops at an empty assignment key
+        // or invalid value.
         for item in grep_colors.split(':') {
             if let Some((key, value)) = item.split_once('=') {
+                if key.is_empty() || !is_color_value(value) {
+                    break;
+                }
                 match key {
                     // `mt` sets matched text in any line; equivalent to ms + mc.
                     "mt" => {
