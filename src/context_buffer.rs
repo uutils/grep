@@ -68,13 +68,7 @@ impl ContextBuffer {
             "push on zero-capacity ContextBuffer"
         );
 
-        if self.capacity == 0 {
-            return
-        }
-
-        let full = self.len == self.capacity;
-
-        let index = if full {
+        let index = if self.len == self.capacity {
             self.head 
         } else {
             let index = self.len;
@@ -100,7 +94,7 @@ impl ContextBuffer {
         slot.line_number = line_number;
         slot.byte_offset = byte_offset;
         
-        if full {
+        if self.len == self.capacity {
             self.head = self.head.wrapping_add(1);
 
             if self.head == self.capacity {
@@ -108,6 +102,7 @@ impl ContextBuffer {
             }
         } else {
             self.len = self.len.wrapping_add(1);
+
             self.head = if self.len == self.capacity {
                 0
             } else {
