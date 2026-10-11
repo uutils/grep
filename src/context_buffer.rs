@@ -41,6 +41,7 @@ impl BufferedLine {
 /// TODO: Ideally, this would be integrated into `LineBuffer`, which can then
 /// provide a more optimized `ContextBuffer` when `mmap()` is available.
 pub struct ContextBuffer {
+    /// One slot per context line; indices wrap with `%`.
     slots: Vec<BufferedLine>,
     head: usize,
     len: usize,
@@ -48,11 +49,6 @@ pub struct ContextBuffer {
 
 impl ContextBuffer {
     pub fn new(capacity: usize) -> Self {
-        let len = if capacity == 0 {
-            0
-        } else {
-            capacity.next_power_of_two()
-        };
         Self {
             slots: vec![
                 BufferedLine {
@@ -60,7 +56,7 @@ impl ContextBuffer {
                     line_number: 0,
                     byte_offset: 0,
                 };
-                len
+                capacity
             ],
             head: 0,
             len: 0,
@@ -77,9 +73,11 @@ impl ContextBuffer {
             !self.slots.is_empty(),
             "push on zero-capacity ContextBuffer"
         );
+        if self.slots.is_empty() {
+            return;
+        }
 
-        let mask = self.slots.len() - 1;
-        let slot = &mut self.slots[self.head & mask];
+        let slot = &mut self.slots[self.head];
 
         slot.line.clear();
         if slot.line.capacity() / 2 > line.len() {
@@ -89,19 +87,21 @@ impl ContextBuffer {
         slot.line_number = line_number;
         slot.byte_offset = byte_offset;
 
-        self.head = self.head.wrapping_add(1);
+        self.head = (self.head + 1) % self.slots.len();
         self.len = (self.len + 1).min(self.slots.len());
     }
 
     pub fn drain_iter(&mut self) -> impl Iterator<Item = &BufferedLine> {
         let len = self.len;
         let slots = &self.slots[..];
-        let mask = self.slots.len().wrapping_sub(1);
-        let start = self.head.wrapping_sub(len);
+        // `len` is 0 when there are no slots, so the closure is never called;
+        // `max(1)` only keeps the modulo well-defined.
+        let n = slots.len().max(1);
+        let start = (self.head + n - len) % n;
 
         self.head = 0;
         self.len = 0;
 
-        (0..len).map(move |i| &slots[start.wrapping_add(i) & mask])
+        (0..len).map(move |i| &slots[(start + i) % n])
     }
 }
