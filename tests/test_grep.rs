@@ -1060,25 +1060,30 @@ fn null_filename_separator() {
 
 #[test]
 fn after_before_combined_context() {
-    let input = "a\nb\nMATCH\nc\nd\n";
+    let input = "a\nb\nc\nd\nMATCH\ne\nf\n";
 
     let (_s, mut c) = ucmd();
     c.args(&["-A", "1", "MATCH"])
         .pipe_in(input)
         .succeeds()
-        .stdout_only("MATCH\nc\n");
+        .stdout_only("MATCH\ne\n");
 
-    let (_s, mut c) = ucmd();
-    c.args(&["-B", "1", "MATCH"])
-        .pipe_in(input)
-        .succeeds()
-        .stdout_only("b\nMATCH\n");
+    for (count, expected) in [
+        ("3", "b\nc\nd\nMATCH\n"),
+        ("2000000000", "a\nb\nc\nd\nMATCH\n"),
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(&["-B", count, "MATCH"])
+            .pipe_in(input)
+            .succeeds()
+            .stdout_only(expected);
+    }
 
     let (_s, mut c) = ucmd();
     c.args(&["-C", "1", "MATCH"])
         .pipe_in(input)
         .succeeds()
-        .stdout_only("b\nMATCH\nc\n");
+        .stdout_only("d\nMATCH\ne\n");
 }
 
 #[test]

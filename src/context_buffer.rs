@@ -42,18 +42,18 @@ impl BufferedLine {
 /// provide a more optimized `ContextBuffer` when `mmap()` is available.
 pub struct ContextBuffer {
     slots: Vec<BufferedLine>,
+    capacity: usize,
     head: usize,
     len: usize,
-    capacity: usize,
 }
 
 impl ContextBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
             slots: Vec::new(),
+            capacity,
             head: 0,
             len: 0,
-            capacity,
         }
     }
 
@@ -63,67 +63,52 @@ impl ContextBuffer {
     }
 
     pub fn push(&mut self, line: &[u8], line_number: u64, byte_offset: u64) {
-        debug_assert!(
-            !self.slots.is_empty(),
-            "push on zero-capacity ContextBuffer"
-        );
+        debug_assert!(self.capacity > 0, "push on zero-capacity ContextBuffer");
 
-        let index = if self.len == self.capacity {
-            self.head 
-        } else {
-            let index = self.len;
+        if self.len == self.slots.len() && self.len < self.capacity {
+            self.head = self.slots.len();
+            self.slots.push(BufferedLine {
+                line: Vec::new(),
+                line_number: 0,
+                byte_offset: 0,
+            });
+        }
 
-            if index == self.slots.len() {
-                self.slots.push(BufferedLine { 
-                    line: Vec::new(), 
-                    line_number, 
-                    byte_offset 
-                });
-            }
-            index
-        };
-
-        let slot = &mut self.slots[index];
-
+        let slot = &mut self.slots[self.head];
         slot.line.clear();
-
         if slot.line.capacity() / 2 > line.len() {
             slot.line.shrink_to(line.len());
         }
         slot.line.extend_from_slice(line);
         slot.line_number = line_number;
         slot.byte_offset = byte_offset;
-        
-        if self.len == self.capacity {
-            self.head = self.head.wrapping_add(1);
 
-            if self.head == self.capacity {
-                self.head = 0;
-            }
-        } else {
-            self.len = self.len.wrapping_add(1);
-
-            self.head = if self.len == self.capacity {
-                0
-            } else {
-                self.len
-            }
+        self.head += 1;
+        if self.head >= self.slots.len() {
+            self.head = 0;
         }
+
+        self.len = (self.len + 1).min(self.slots.len());
     }
 
     pub fn drain_iter(&mut self) -> impl Iterator<Item = &BufferedLine> {
+        debug_assert!(self.head <= self.len);
+        debug_assert!(self.len <= self.slots.len());
+
         let len = self.len;
-        let slots = &self.slots[..];
-        
-        let start = if len == self.capacity {
-            self.head 
-        } else {
-            0
-        };
+        let slots = &self.slots[..len];
+        let mut index = self.head;
 
         self.head = 0;
         self.len = 0;
 
-        (0..len).map(move |i| &slots[start.wrapping_add(i) % slots.len()])
+        (0..len).map(move |_| {
+            if index >= len {
+                index = 0;
+            }
+            let line = &slots[index];
+            index += 1;
+            line
+        })
     }
 }
