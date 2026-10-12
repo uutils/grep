@@ -1,4 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
+use uutests::util::TerminalSimulation;
 use uutests::util::{TestScenario, UCommand};
 
 static UCMD_INIT: AtomicBool = AtomicBool::new(false);
@@ -1257,6 +1259,39 @@ fn color_never_emits_no_escapes() {
         .stdout_only("foo\n");
 }
 
+#[cfg(unix)]
+#[test]
+fn color_on_a_terminal_needs_option_and_term_not_dumb() {
+    // Guard against treating empty TERM or "DUMB" as "dumb".
+    let colored = "\x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\n";
+    for (term, expected) in [
+        (None, "foo\n"),
+        (Some("dumb"), "foo\n"),
+        (Some(""), colored),
+        (Some("DUMB"), colored),
+        (Some("xterm"), colored),
+    ] {
+        for option in [None, Some("--color"), Some("--color=auto")] {
+            let (_s, mut c) = ucmd();
+            if let Some(term) = term {
+                c.env("TERM", term);
+            }
+            if let Some(option) = option {
+                c.arg(option);
+            }
+            c.terminal_sim_stdio(TerminalSimulation {
+                stdout: true,
+                ..Default::default()
+            })
+            .arg("foo")
+            .pipe_in("foo\n")
+            .succeeds()
+            .no_stderr()
+            .normalized_newlines_stdout_is(if option.is_some() { expected } else { "foo\n" });
+        }
+    }
+}
+
 #[test]
 fn grep_colors_mt_sets_match_color() {
     // `mt` in GREP_COLORS sets the matched-text color (equivalent to ms + mc).
@@ -1299,6 +1334,25 @@ fn color_line_number_uses_green() {
         .pipe_in("foo\n")
         .succeeds()
         .stdout_contains("\x1b[32m\x1b[K1\x1b[m\x1b[K");
+}
+
+#[test]
+fn color_count_colors_file_name_and_separator() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("a", "foo\nfoo\n");
+    scene.fixtures.write("b", "bar\n");
+    c.args(&["--color=always", "-c", "foo", "a", "b"])
+        .succeeds()
+        .stdout_only(
+            "\x1b[35m\x1b[Ka\x1b[m\x1b[K\x1b[36m\x1b[K:\x1b[m\x1b[K2\n\
+             \x1b[35m\x1b[Kb\x1b[m\x1b[K\x1b[36m\x1b[K:\x1b[m\x1b[K0\n",
+        );
+
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("a", "foo\nfoo\n");
+    c.args(&["--color=always", "-c", "--null", "-H", "foo", "a"])
+        .succeeds()
+        .stdout_only("\x1b[35m\x1b[Ka\x1b[m\x1b[K\x002\n");
 }
 
 #[test]
