@@ -62,7 +62,7 @@ jobs:
       - name: Install grcov
         shell: bash
         run: |
-          git clone https://github.com/mozilla/grcov.git ~/grcov/
+          git clone --depth=1 https://github.com/mozilla/grcov.git ~/grcov/
           cd ~/grcov
           cargo install --path .
 
