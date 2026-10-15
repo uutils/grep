@@ -200,6 +200,14 @@ impl<'a> Searcher<'a> {
                 path = Self::strip_dot_prefix(path);
             }
 
+            #[cfg(windows)]
+            if self.config.forward_slashes
+                && let Some(slashed) = forward_slashed(path)
+            {
+                self.process_file(lb, &slashed)?;
+                continue;
+            }
+
             self.process_file(lb, path)?;
         }
 
@@ -762,4 +770,16 @@ fn line_bounds(buf: &[u8], pos: usize) -> (usize, usize) {
     let start = memrchr(b'\n', &buf[..pos]).map_or(0, |i| i + 1);
     let end = memchr(b'\n', &buf[pos..]).map_or(buf.len(), |i| pos + i);
     (start, end)
+}
+
+/// `path` with `/` for every separator, for `UUTILS_PATH_SEPARATOR=/`. Paths
+/// with no `\`, and verbatim (`\\?\`) and device (`\\.\`) paths, where
+/// `/` does not mean the same thing, are left alone.
+#[cfg(windows)]
+fn forward_slashed(path: &Path) -> Option<std::path::PathBuf> {
+    let s = path.to_string_lossy();
+    if !s.contains('\\') || s.starts_with("\\\\?\\") || s.starts_with("\\\\.\\") {
+        return None;
+    }
+    Some(std::path::PathBuf::from(s.replace('\\', "/")))
 }
