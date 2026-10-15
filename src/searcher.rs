@@ -209,6 +209,20 @@ impl<'a> Searcher<'a> {
                 path = Self::strip_dot_prefix(path);
             }
 
+            #[cfg(windows)]
+            if self.config.forward_slashes {
+                // The operand keeps the spelling it was given.
+                let operand_len = if strip_root {
+                    0
+                } else {
+                    start.as_os_str().len()
+                };
+                if let Some(name) = forward_slashed(path, operand_len) {
+                    self.process_file_as(lb, path, &name)?;
+                    continue;
+                }
+            }
+
             self.process_file(lb, path)?;
         }
 
@@ -216,14 +230,24 @@ impl<'a> Searcher<'a> {
     }
 
     fn process_file(&mut self, lb: &mut LineBuffer, path: &Path) -> ControlFlow<()> {
+        self.process_file_as(lb, path, path)
+    }
+
+    /// Search the file at `path`, printing `name` for it.
+    fn process_file_as(
+        &mut self,
+        lb: &mut LineBuffer,
+        path: &Path,
+        name: &Path,
+    ) -> ControlFlow<()> {
         let result = File::open(path).and_then(|mut file| {
             if self.writer.wants_padded_line_numbers() {
                 let file_size = file.metadata().map_or(0, |m| m.len());
                 self.writer.set_line_number_width(padded_width(file_size));
             }
-            self.session_run(lb, path, &mut file)
+            self.session_run(lb, name, &mut file)
         });
-        self.record_result(path.as_os_str(), result)
+        self.record_result(name.as_os_str(), result)
     }
 
     fn record_result(&mut self, label: &OsStr, result: io::Result<bool>) -> ControlFlow<()> {
@@ -792,4 +816,61 @@ fn line_bounds(buf: &[u8], pos: usize) -> (usize, usize) {
     let start = memrchr(b'\n', &buf[..pos]).map_or(0, |i| i + 1);
     let end = memchr(b'\n', &buf[pos..]).map_or(buf.len(), |i| pos + i);
     (start, end)
+}
+
+/// `path` as `UUTILS_PATH_SEPARATOR=slash` prints it: every `\` after the
+/// first `operand_len` bytes becomes `/`. `None` when that changes nothing,
+/// and for verbatim (`\\?\`) and device (`\\.\`) paths, where `/` is not a
+/// separator.
+#[cfg(windows)]
+fn forward_slashed(path: &Path, operand_len: usize) -> Option<std::path::PathBuf> {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let (operand, walked) = bytes.split_at_checked(operand_len)?;
+    if !walked.contains(&b'\\') || bytes.starts_with(br"\\?\") || bytes.starts_with(br"\\.\") {
+        return None;
+    }
+    let mut name = operand.to_vec();
+    name.extend(walked.iter().map(|&b| if b == b'\\' { b'/' } else { b }));
+    // SAFETY: only the ASCII byte `\` is replaced, with the ASCII byte `/`,
+    // so every other code point's bytes are left as they were.
+    Some(unsafe { std::ffi::OsString::from_encoded_bytes_unchecked(name) }.into())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::forward_slashed;
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn forward_slashed_keeps_unpaired_surrogates() {
+        // `a\b<U+D800>.txt`: an unpaired surrogate is a valid Windows file name.
+        let wide: Vec<u16> = "a\\b"
+            .encode_utf16()
+            .chain([0xD800])
+            .chain(".txt".encode_utf16())
+            .collect();
+        let slashed = forward_slashed(Path::new(&OsString::from_wide(&wide)), 0).unwrap();
+        let expected: Vec<u16> = "a/b"
+            .encode_utf16()
+            .chain([0xD800])
+            .chain(".txt".encode_utf16())
+            .collect();
+        assert_eq!(
+            slashed.as_os_str().encode_wide().collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn forward_slashed_respells_only_past_the_operand() {
+        let slashed = |path, operand_len| forward_slashed(Path::new(path), operand_len);
+        assert_eq!(slashed(r"a\b", 0), Some(PathBuf::from("a/b")));
+        assert_eq!(slashed(r"a\b\c\d", 3), Some(PathBuf::from(r"a\b/c/d")));
+        assert_eq!(slashed(r"a\b/c", 3), None);
+        assert_eq!(slashed("a/b", 0), None);
+        assert_eq!(slashed(r"\\?\C:\a\b", 0), None);
+        assert_eq!(slashed(r"\\.\pipe\x", 0), None);
+    }
 }

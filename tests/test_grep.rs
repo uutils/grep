@@ -2528,3 +2528,56 @@ fn only_matching_empty_match_does_not_split_utf8() {
             "{red}run{reset} \u{1F635}{red}rm{reset} {red}now{reset}\n"
         ));
 }
+
+#[test]
+fn recursive_path_separator() {
+    // `slash` changes nothing where `/` is already the separator; on Windows
+    // it replaces the `\` that `-r` joins with, and nothing in the line.
+    let sep = std::path::MAIN_SEPARATOR;
+    let native = format!("deep{sep}sub{sep}c.txt");
+    let cases: [(Option<&str>, &[&str], String); 6] = [
+        (
+            Some("slash"),
+            &["-r", "grep", "deep"],
+            "deep/sub/c.txt:C:\\tmp grep me\n".into(),
+        ),
+        (
+            Some("slash"),
+            &["-r", "grep"],
+            "deep/sub/c.txt:C:\\tmp grep me\n".into(),
+        ),
+        (
+            Some("slash"),
+            &["-rl", "grep", "deep"],
+            "deep/sub/c.txt\n".into(),
+        ),
+        (
+            Some("slash"),
+            &["-rc", "grep", "deep"],
+            "deep/sub/c.txt:1\n".into(),
+        ),
+        (Some("/"), &["-rl", "grep", "deep"], format!("{native}\n")),
+        (None, &["-rl", "grep", "deep"], format!("{native}\n")),
+    ];
+    for (value, args, expected) in cases {
+        let (scene, mut c) = ucmd();
+        scene.fixtures.mkdir_all("deep/sub");
+        scene.fixtures.write("deep/sub/c.txt", "C:\\tmp grep me\n");
+        if let Some(value) = value {
+            c.env("UUTILS_PATH_SEPARATOR", value);
+        }
+        c.args(args).succeeds().stdout_is(expected);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn recursive_path_separator_keeps_the_operand_as_typed() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.mkdir_all("deep/sub/dir");
+    scene.fixtures.write("deep/sub/dir/c.txt", "grep me\n");
+    c.env("UUTILS_PATH_SEPARATOR", "slash")
+        .args(&["-rl", "grep", "deep\\sub"])
+        .succeeds()
+        .stdout_is("deep\\sub/dir/c.txt\n");
+}
