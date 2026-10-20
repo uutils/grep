@@ -167,7 +167,8 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let max_count = matches.get_one::<u64>("max_count").copied();
     let byte_offset = matches.get_flag("byte_offset");
     let line_number = matches.get_flag("line_number");
-    let line_buffered = matches.get_flag("line_buffered");
+    // Interactive output must be visible while grep waits for more input.
+    let line_buffered = matches.get_flag("line_buffered") || std::io::stdout().is_terminal();
     let with_filename = matches.get_flag("with_filename");
     let no_filename = matches.get_flag("no_filename");
     let label = matches

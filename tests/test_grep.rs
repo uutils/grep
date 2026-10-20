@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use uutests::util::TerminalSimulation;
 use uutests::util::{TestScenario, UCommand};
 
+mod buffering;
+
 static UCMD_INIT: AtomicBool = AtomicBool::new(false);
 
 fn ucmd() -> (TestScenario, UCommand) {

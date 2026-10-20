@@ -231,7 +231,7 @@ impl<'a> OutputWriter<'a> {
         }
     }
 
-    /// Flush in `--line-buffered` mode.
+    /// Flush for terminal output or explicit `--line-buffered` mode.
     fn maybe_flush(&mut self) -> io::Result<()> {
         if self.config.line_buffered {
             self.out.flush()
