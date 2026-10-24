@@ -2144,3 +2144,50 @@ fn only_matching_with_context() {
         .succeeds()
         .stdout_only("4:xx\n");
 }
+
+#[test]
+fn recursive_path_separator_forward_slash() {
+    // A no-op where `/` is already the separator; on Windows it replaces `\`.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.mkdir_all("deep/sub");
+    scene.fixtures.write("deep/sub/c.txt", "grep me\n");
+    c.env("UUTILS_PATH_SEPARATOR", "/")
+        .args(&["-r", "grep", "deep"])
+        .succeeds()
+        .stdout_is("deep/sub/c.txt:grep me\n");
+}
+
+#[test]
+fn recursive_path_separator_forward_slash_files_with_matches() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.mkdir_all("deep/sub");
+    scene.fixtures.write("deep/sub/c.txt", "grep me\n");
+    c.env("UUTILS_PATH_SEPARATOR", "/")
+        .args(&["-rl", "grep", "deep"])
+        .succeeds()
+        .stdout_is("deep/sub/c.txt\n");
+}
+
+#[test]
+fn recursive_path_separator_slash_word() {
+    // MSYS2 and Git Bash rewrite a bare `/` value into their install folder.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.mkdir_all("deep/sub");
+    scene.fixtures.write("deep/sub/c.txt", "grep me\n");
+    c.env("UUTILS_PATH_SEPARATOR", "slash")
+        .args(&["-rl", "grep", "deep"])
+        .succeeds()
+        .stdout_is("deep/sub/c.txt\n");
+}
+
+#[test]
+fn recursive_path_separator_other_values_keep_the_native_separator() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.mkdir_all("deep/sub");
+    scene.fixtures.write("deep/sub/c.txt", "grep me\n");
+    let sep = std::path::MAIN_SEPARATOR;
+    c.env("UUTILS_PATH_SEPARATOR", "\\")
+        .args(&["-r", "grep", "deep"])
+        .succeeds()
+        .stdout_is(format!("deep{sep}sub{sep}c.txt:grep me\n"));
+}
