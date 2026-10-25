@@ -107,9 +107,14 @@ impl<'a> Searcher<'a> {
 
         let path = Path::new(&self.config.label);
 
-        // Stdin is not seekable; use fixed width.
+        // Like a named file, a regular file on stdin sizes the field from its
+        // length; anything else (a pipe, a terminal) gets a fixed width.
         if self.writer.wants_padded_line_numbers() {
-            self.writer.set_line_number_width(19);
+            let width = match stdin.metadata() {
+                Ok(m) if m.is_file() => m.len().max(1).ilog10() as usize + 1,
+                _ => 19,
+            };
+            self.writer.set_line_number_width(width);
         }
 
         // Where standard input was before we started buffering ahead of it.

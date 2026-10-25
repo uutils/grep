@@ -30,13 +30,13 @@ impl<'a> OutputWriter<'a> {
         }
     }
 
-    /// Returns true if line numbers will be padded with whitespace (`-T`),
-    /// which means that you should call `set_line_number_width`.
+    /// Returns true if line numbers or byte offsets will be padded with
+    /// whitespace (`-T`), which means that you should call `set_line_number_width`.
     pub fn wants_padded_line_numbers(&self) -> bool {
-        self.config.initial_tab && self.config.line_number
+        self.config.initial_tab && (self.config.line_number || self.config.byte_offset)
     }
 
-    /// Set the minimum field width for line numbers (used with `-T`).
+    /// Set the minimum field width for line numbers and byte offsets (used with `-T`).
     ///
     /// It's sort of wrong for this to be a setter, because it's technically
     /// per-session state in searcher.rs, but it's convenient and it's cheap.
@@ -143,9 +143,10 @@ impl<'a> OutputWriter<'a> {
         }
 
         if self.config.byte_offset {
+            let width = self.line_number_width;
             self.write_colored_fmt(
                 self.config.color_config.byte_offset,
-                format_args!("{}", byte_offset),
+                format_args!("{:>width$}", byte_offset, width = width),
             )?;
             self.write_separator(sep_char)?;
         }
