@@ -1050,6 +1050,25 @@ fn line_number_and_byte_offset_prefixes() {
 }
 
 #[test]
+fn initial_tab_pads_to_the_input_size() {
+    // GNU grep pads line numbers and byte offsets under -T to the number of
+    // digits of the input's size; 100 bytes gives three columns.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("f", &format!("{}x\n", "a".repeat(98)));
+    c.args(&["-T", "-n", "-b", "x", "f"])
+        .succeeds()
+        .stdout_only(format!("  1:  0:\t{}x\n", "a".repeat(98)));
+
+    // A regular file on stdin is sized the same way.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("f", &format!("{}x\n", "a".repeat(98)));
+    c.args(&["-T", "-n", "-b", "x"])
+        .set_stdin(std::fs::File::open(scene.fixtures.plus("f")).unwrap())
+        .succeeds()
+        .stdout_only(format!("  1:  0:\t{}x\n", "a".repeat(98)));
+}
+
+#[test]
 fn null_filename_separator() {
     let (scene, mut c) = ucmd();
     scene.fixtures.write("f", "x\n");
