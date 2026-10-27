@@ -224,6 +224,16 @@ fn misspelled_character_class_is_error() {
 }
 
 #[test]
+fn reversed_interval_is_error() {
+    for args in [&["-E", "fo{2,1}"][..], &["fo\\{2,1\\}"][..]] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .fails_with_code(2)
+            .stderr_contains("Invalid content of \\{\\}");
+    }
+}
+
+#[test]
 fn max_count_rewinds_seekable_stdin() {
     // -m stops mid-input after reading ahead. When standard input can seek,
     // the unread remainder must be left in place for the next reader.
