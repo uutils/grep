@@ -277,6 +277,10 @@ impl CompiledPattern {
             // GNU grep supports \` and \' as buffer anchors in BRE and ERE.
             syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_GNU_BUF_ANCHOR);
         }
+        if config.regex_mode == RegexMode::Extended {
+            // GNU grep -E reads an unmatched `)` as a literal.
+            syntax.enable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_UNMATCHED_CLOSE_SUBEXP);
+        }
 
         if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended)
             && has_confusing_bracket(pattern.as_bytes())

@@ -144,6 +144,15 @@ fn ere_invalid_pattern_is_error() {
 }
 
 #[test]
+fn ere_unmatched_close_paren_is_literal() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", "a)"])
+        .pipe_in("a)\nb\n")
+        .succeeds()
+        .stdout_only("a)\n");
+}
+
+#[test]
 fn reversed_range_endpoints_match_gnu_message() {
     // A reversed bracket range like `[b-a]` must fail with exit 2 and GNU's
     // diagnostic "Invalid range end", in both basic and extended modes.
