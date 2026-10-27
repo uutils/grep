@@ -990,18 +990,43 @@ impl GlobSet {
         Ok(())
     }
 
+    /// Whether a file found by recursion is skipped, by its base name.
     pub fn skips(&self, name: &OsStr) -> bool {
-        let last_match = name.to_str().and_then(|name| {
-            self.patterns
-                .iter()
-                .rev()
-                .find(|(_, pattern)| pattern.matches(name))
-        });
-        match last_match {
+        let name = name.to_str();
+        self.skips_if(|pattern| name.is_some_and(|name| pattern.matches(name)))
+    }
+
+    /// Whether a file named on the command line is skipped. A pattern
+    /// matches when it matches a suffix of the name: the whole name, or a
+    /// part that starts right after a path separator.
+    pub fn skips_command_line_file(&self, path: &Path) -> bool {
+        let name = path.to_str();
+        self.skips_if(|pattern| {
+            name.is_some_and(|name| suffixes(name).any(|suffix| pattern.matches(suffix)))
+        })
+    }
+
+    fn skips_if(&self, matches: impl Fn(&glob::Pattern) -> bool) -> bool {
+        match self
+            .patterns
+            .iter()
+            .rev()
+            .find(|(_, pattern)| matches(pattern))
+        {
             Some((include, _)) => !include,
             None => self.patterns.first().is_some_and(|(include, _)| *include),
         }
     }
+}
+
+/// `name` and each part of it that starts right after a path separator.
+fn suffixes(name: &str) -> impl Iterator<Item = &str> {
+    let after_separator = name
+        .char_indices()
+        .filter(|&(_, c)| std::path::is_separator(c))
+        .map(|(i, _)| &name[i + 1..])
+        .filter(|rest| !rest.is_empty() && !rest.starts_with(std::path::is_separator));
+    std::iter::once(name).chain(after_separator)
 }
 
 fn is_color_value(value: &str) -> bool {
