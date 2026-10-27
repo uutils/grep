@@ -77,6 +77,11 @@ impl<'a> Searcher<'a> {
             if self.config.device_mode == DeviceMode::Skip && Self::is_special_file(path) {
                 return ControlFlow::Continue(());
             }
+            // Files named on the command line are filtered by --include and
+            // --exclude too. A missing file is still opened, to report it.
+            if path.exists() && self.config.file_globs.skips_command_line_file(path) {
+                return ControlFlow::Continue(());
+            }
             self.process_file(lb, path)
         }
     }
