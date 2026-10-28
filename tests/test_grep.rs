@@ -1677,6 +1677,60 @@ fn include_exclude_apply_to_command_line_files() {
 }
 
 #[test]
+fn include_exclude_regex_globs() {
+    let (scene, _) = ucmd();
+    build_tree(&scene);
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["--exclude=tree/[ab].?xt", "grep", "tree/a.txt"])
+        .fails_with_code(1)
+        .no_output();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["--include=tree/**/c.txt", "grep", "tree/sub/c.txt"])
+        .succeeds()
+        .stdout_is("grep me\n")
+        .no_stderr();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["--include=tree/**/a.txt", "grep", "tree/a.txt"])
+        .fails_with_code(1)
+        .no_output();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&[
+        "--include=***.[[:alpha:]][[:alpha:]][[:alpha:]]",
+        "grep",
+        "tree/a.txt",
+    ])
+    .succeeds()
+    .stdout_is("grep me\n")
+    .no_stderr();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["--exclude=tree/*", "--include=a.txt", "grep", "tree/a.txt"])
+        .succeeds()
+        .stdout_is("grep me\n")
+        .no_stderr();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["--include=a.txt", "--exclude=tree/*", "grep", "tree/a.txt"])
+        .fails_with_code(1)
+        .no_output();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["--exclude=[[:notaclass:]]", "grep", "tree/a.txt"])
+        .fails_with_code(2)
+        .stderr_contains("invalid glob");
+
+    scene.fixtures.write("[abc", "grep me\n");
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["--exclude=[abc", "grep", "[abc"])
+        .fails_with_code(1)
+        .no_output();
+}
+
+#[test]
 fn recursive_exclude_from_file() {
     let (scene, mut c) = ucmd();
     build_tree(&scene);

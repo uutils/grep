@@ -79,7 +79,7 @@ impl<'a> Searcher<'a> {
             }
             // Files named on the command line are filtered by --include and
             // --exclude too. A missing file is still opened, to report it.
-            if path.exists() && self.config.file_globs.skips_command_line_file(path) {
+            if self.config.file_globs.skips_command_line_file(path) && path.exists() {
                 return ControlFlow::Continue(());
             }
             self.process_file(lb, path)
