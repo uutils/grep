@@ -1232,7 +1232,6 @@ version = "0.2.0"
 dependencies = [
  "clap",
  "codspeed-criterion-compat",
- "glob",
  "memchr",
  "onig",
  "onig_sys",

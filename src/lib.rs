@@ -5,6 +5,7 @@
 
 #[doc(hidden)]
 pub mod context_buffer;
+mod glob;
 #[doc(hidden)]
 pub mod line_buffer;
 #[doc(hidden)]
@@ -12,12 +13,13 @@ pub mod matcher;
 mod output;
 mod searcher;
 
+use crate::glob::GlobSet;
 use crate::line_buffer::LineBuffer;
 use crate::matcher::Matcher;
 use crate::output::OutputWriter;
 use crate::searcher::Searcher;
 use clap::{Arg, ArgAction, Command};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::{IsTerminal as _, Read};
 use std::path::Path;
 use uucore::error::{ExitCode, UError, UResult, USimpleError, strip_errno};
@@ -76,14 +78,6 @@ pub struct ColorConfig<'a> {
 
     pub reverse_video: bool,
     pub no_erase: bool,
-}
-
-/// Include and exclude patterns, in command-line order. As in GNU grep, the
-/// last pattern that matches a name decides. If none matches, the name is
-/// skipped only when the first pattern is an include.
-#[doc(hidden)]
-pub struct GlobSet {
-    patterns: Vec<(bool, glob::Pattern)>,
 }
 
 #[doc(hidden)]
@@ -961,47 +955,6 @@ fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
     }
 
     out
-}
-
-impl Default for GlobSet {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl GlobSet {
-    /// Create an empty GlobSet.
-    pub fn new() -> Self {
-        Self {
-            patterns: Vec::new(),
-        }
-    }
-
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            patterns: Vec::with_capacity(capacity),
-        }
-    }
-
-    fn add(&mut self, include: bool, pattern: &str) -> UResult<()> {
-        let compiled_pattern = glob::Pattern::new(pattern)
-            .map_err(|e| USimpleError::new(2, format!("invalid glob '{pattern}': {e}")))?;
-        self.patterns.push((include, compiled_pattern));
-        Ok(())
-    }
-
-    pub fn skips(&self, name: &OsStr) -> bool {
-        let last_match = name.to_str().and_then(|name| {
-            self.patterns
-                .iter()
-                .rev()
-                .find(|(_, pattern)| pattern.matches(name))
-        });
-        match last_match {
-            Some((include, _)) => !include,
-            None => self.patterns.first().is_some_and(|(include, _)| *include),
-        }
-    }
 }
 
 fn is_color_value(value: &str) -> bool {

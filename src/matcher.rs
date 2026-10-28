@@ -372,7 +372,7 @@ impl CompiledPattern {
     }
 }
 
-struct OnigRegex {
+pub(crate) struct OnigRegex {
     raw: onig_sys::OnigRegex,
 }
 
@@ -384,7 +384,11 @@ unsafe impl Send for OnigRegex {}
 unsafe impl Sync for OnigRegex {}
 
 impl OnigRegex {
-    fn compile(pattern: &str, syntax: &Syntax, options: RegexOptions) -> Result<Self, OnigError> {
+    pub(crate) fn compile(
+        pattern: &str,
+        syntax: &Syntax,
+        options: RegexOptions,
+    ) -> Result<Self, OnigError> {
         let pattern = pattern.as_bytes();
         let mut raw = null_mut();
         let mut error = onig_sys::OnigErrorInfo {
@@ -427,7 +431,12 @@ impl OnigRegex {
         }
     }
 
-    fn search(&self, line: &[u8], offset: usize, region: Option<&mut Region>) -> Option<usize> {
+    pub(crate) fn search(
+        &self,
+        line: &[u8],
+        offset: usize,
+        region: Option<&mut Region>,
+    ) -> Option<usize> {
         debug_assert!(offset <= line.len());
         // SAFETY: `offset` is bounded by `line.len()`, all byte pointers are
         // derived from `line`, and `region_ptr` preserves `onig::Region`'s
@@ -448,7 +457,12 @@ impl OnigRegex {
         onig_match_result(result)
     }
 
-    fn match_at(&self, line: &[u8], offset: usize, region: Option<&mut Region>) -> Option<usize> {
+    pub(crate) fn match_at(
+        &self,
+        line: &[u8],
+        offset: usize,
+        region: Option<&mut Region>,
+    ) -> Option<usize> {
         debug_assert!(offset <= line.len());
         // SAFETY: `offset` is bounded by `line.len()`, all byte pointers are
         // derived from `line`, and `region_ptr` preserves `onig::Region`'s
@@ -476,9 +490,9 @@ impl Drop for OnigRegex {
     }
 }
 
-struct OnigError {
+pub(crate) struct OnigError {
     code: i32,
-    message: String,
+    pub(crate) message: String,
 }
 
 impl OnigError {
@@ -610,7 +624,11 @@ fn scan_bracket(pattern: &[u8], start: usize) -> (bool, usize) {
 
 /// Index just past the `:]`, `.]` or `=]` closing a `[: [. [=` subexpression
 /// whose body starts at `start`.
-fn find_bracket_subexpr_end(pattern: &[u8], start: usize, delimiter: u8) -> Option<usize> {
+pub(crate) fn find_bracket_subexpr_end(
+    pattern: &[u8],
+    start: usize,
+    delimiter: u8,
+) -> Option<usize> {
     (start..pattern.len().saturating_sub(1))
         .find(|&i| pattern[i] == delimiter && pattern[i + 1] == b']')
         .map(|i| i + 2)
