@@ -198,6 +198,14 @@ impl<'a> Searcher<'a> {
                 path = Self::strip_dot_prefix(path);
             }
 
+            #[cfg(windows)]
+            if self.config.forward_slashes
+                && let Some(slashed) = forward_slashed(path)
+            {
+                self.process_file(lb, &slashed)?;
+                continue;
+            }
+
             self.process_file(lb, path)?;
         }
 
@@ -760,4 +768,61 @@ fn line_bounds(buf: &[u8], pos: usize) -> (usize, usize) {
     let start = memrchr(b'\n', &buf[..pos]).map_or(0, |i| i + 1);
     let end = memchr(b'\n', &buf[pos..]).map_or(buf.len(), |i| pos + i);
     (start, end)
+}
+
+/// `path` with `/` for every separator, for `UUTILS_PATH_SEPARATOR=/`. Paths
+/// with no `\`, and verbatim (`\\?\`) and device (`\\.\`) paths, where
+/// `/` does not mean the same thing, are left alone.
+#[cfg(windows)]
+fn forward_slashed(path: &Path) -> Option<std::path::PathBuf> {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    if !bytes.contains(&b'\\') || bytes.starts_with(br"\\?\") || bytes.starts_with(br"\\.\") {
+        return None;
+    }
+    let slashed: Vec<u8> = bytes
+        .iter()
+        .map(|&b| if b == b'\\' { b'/' } else { b })
+        .collect();
+    // SAFETY: only the ASCII byte `\` is replaced, with the ASCII byte `/`,
+    // so every other code point's bytes are left as they were.
+    Some(unsafe { std::ffi::OsString::from_encoded_bytes_unchecked(slashed) }.into())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::forward_slashed;
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn forward_slashed_keeps_unpaired_surrogates() {
+        // `a\b<U+D800>.txt`: an unpaired surrogate is a valid Windows file name.
+        let wide: Vec<u16> = "a\\b"
+            .encode_utf16()
+            .chain([0xD800])
+            .chain(".txt".encode_utf16())
+            .collect();
+        let slashed = forward_slashed(Path::new(&OsString::from_wide(&wide))).unwrap();
+        let expected: Vec<u16> = "a/b"
+            .encode_utf16()
+            .chain([0xD800])
+            .chain(".txt".encode_utf16())
+            .collect();
+        assert_eq!(
+            slashed.as_os_str().encode_wide().collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn forward_slashed_leaves_verbatim_and_device_paths() {
+        assert_eq!(forward_slashed(Path::new(r"\\?\C:\a\b")), None);
+        assert_eq!(forward_slashed(Path::new(r"\\.\pipe\x")), None);
+        assert_eq!(forward_slashed(Path::new("a/b")), None);
+        assert_eq!(
+            forward_slashed(Path::new(r"a\b")),
+            Some(PathBuf::from("a/b"))
+        );
+    }
 }
