@@ -14,4 +14,7 @@
 # (init.sh + init.cfg + the extensionless test scripts), which
 # util/run-gnu-testsuite.sh drives against the Rust grep binary.
 ver="3.12"
-curl -L "https://ftp.gnu.org/gnu/grep/grep-${ver}.tar.xz" | tar --strip-components=1 -xJf -
+sha256="2649b27c0e90e632eadcd757be06c6e9a4f48d941de51e7c0f83ff76408a07b9"
+curl -fsSL "https://github.com/uutils/thirdparty-artifacts/releases/download/grep-${ver}/grep-${ver}.tar.xz" -o grep.tar.xz
+echo $sha256 grep.tar.xz | sha256sum -c
+tar --strip-components=1 -xJf grep.tar.xz
