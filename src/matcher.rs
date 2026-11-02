@@ -7,7 +7,8 @@ use crate::{Config, RegexMode};
 use memchr::memmem;
 use onig::{RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior, SyntaxOperator};
 use onig_sys::{
-    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
+    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, ONIGERR_UPPER_SMALLER_THAN_LOWER_IN_REPEAT_RANGE,
+    OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
 };
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
@@ -297,6 +298,24 @@ impl CompiledPattern {
         } else {
             pattern
         };
+
+        // Oniguruma reads `{2,1}` as a possessive `{1,2}`, GNU grep rejects it.
+        // PLUS_POSSESSIVE_INTERVAL makes Oniguruma reject it too, but it also
+        // makes `{n,m}+` possessive, so it's only used for this check.
+        if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended)
+            && pattern.contains('{')
+        {
+            let mut strict = syntax;
+            strict.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_PLUS_POSSESSIVE_INTERVAL);
+            if let Err(err) = OnigRegex::compile(pattern, &strict, RegexOptions::REGEX_OPTION_NONE)
+                && err.code == ONIGERR_UPPER_SMALLER_THAN_LOWER_IN_REPEAT_RANGE
+            {
+                return Err(USimpleError::new(
+                    2,
+                    "Invalid content of \\{\\}".to_string(),
+                ));
+            }
+        }
 
         if config.regex_mode == RegexMode::Perl {
             // GNU grep supports `(?P<name>...)`.
