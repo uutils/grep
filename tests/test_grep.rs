@@ -1054,18 +1054,28 @@ fn initial_tab_pads_to_the_input_size() {
     // GNU grep pads line numbers and byte offsets under -T to the number of
     // digits of the input's size; 100 bytes gives three columns.
     let (scene, mut c) = ucmd();
-    scene.fixtures.write("f", &format!("{}x\n", "a".repeat(98)));
+    let text = format!("{}x\n", "a".repeat(98));
+    scene.fixtures.write("f", &text);
+    let expected = format!("  1:  0:\t{text}");
     c.args(&["-T", "-n", "-b", "x", "f"])
         .succeeds()
-        .stdout_only(format!("  1:  0:\t{}x\n", "a".repeat(98)));
+        .stdout_only(&expected);
 
     // A regular file on stdin is sized the same way.
-    let (scene, mut c) = ucmd();
-    scene.fixtures.write("f", &format!("{}x\n", "a".repeat(98)));
-    c.args(&["-T", "-n", "-b", "x"])
+    scene
+        .cmd(env!("CARGO_BIN_EXE_grep"))
+        .args(&["-T", "-n", "-b", "x"])
         .set_stdin(std::fs::File::open(scene.fixtures.plus("f")).unwrap())
         .succeeds()
-        .stdout_only(format!("  1:  0:\t{}x\n", "a".repeat(98)));
+        .stdout_only(&expected);
+
+    // A pipe has no size, so it gets the fixed width.
+    scene
+        .cmd(env!("CARGO_BIN_EXE_grep"))
+        .args(&["-bT", "x"])
+        .pipe_in("x\n")
+        .succeeds()
+        .stdout_only(format!("{:>19}:\tx\n", 0));
 }
 
 #[test]
