@@ -30,8 +30,9 @@ pub struct Matcher<'a> {
 impl<'a> Matcher<'a> {
     pub fn compile(config: &'a Config<'a>) -> UResult<Self> {
         let mut patterns = Vec::with_capacity(config.patterns.len());
-        for raw in config.patterns {
-            patterns.push(CompiledPattern::compile(raw, config)?);
+        for (index, raw) in config.patterns.iter().enumerate() {
+            let origin = config.pattern_origins.get(index).copied().flatten();
+            patterns.push(CompiledPattern::compile(raw, origin, config)?);
         }
 
         // If we can reduce the whole pattern set to literal needles, keep a
@@ -262,7 +263,8 @@ struct CompiledPattern {
 }
 
 impl CompiledPattern {
-    fn compile(pattern: &str, config: &Config) -> UResult<Self> {
+    /// `origin` is the `-f` file and line the pattern came from, if any.
+    fn compile(pattern: &str, origin: Option<(&str, usize)>, config: &Config) -> UResult<Self> {
         let mut syntax = *match config.regex_mode {
             RegexMode::Fixed => Syntax::asis(),
             RegexMode::Basic => Syntax::grep(),
@@ -325,10 +327,21 @@ impl CompiledPattern {
             options |= RegexOptions::REGEX_OPTION_MULTILINE;
         }
 
+        // Like GNU grep, a regex syntax error in a pattern read with `-f FILE`
+        // names the file and line (`FILE:LINE: message`). GNU's PCRE backend
+        // reports its errors without this location.
+        let location = match origin {
+            Some((file, line)) if config.regex_mode != RegexMode::Perl => {
+                format!("{file}:{line}: ")
+            }
+            _ => String::new(),
+        };
+
         fn compile_with(
             pattern: &str,
             syntax: &Syntax,
             options: RegexOptions,
+            location: &str,
         ) -> UResult<OnigRegex> {
             OnigRegex::compile(pattern, syntax, options).map_err(|err| {
                 // A reversed range like `[b-a]` is ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS.
@@ -338,15 +351,16 @@ impl CompiledPattern {
                     ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS => "Invalid range end".to_string(),
                     _ => format!("invalid pattern \"{pattern}\": {}", err.message),
                 };
-                USimpleError::new(2, message)
+                USimpleError::new(2, format!("{location}{message}"))
             })
         }
 
-        let leftmost = compile_with(pattern, &syntax, options)?;
+        let leftmost = compile_with(pattern, &syntax, options, &location)?;
         let longest_anchored = compile_with(
             pattern,
             &syntax,
             options | RegexOptions::REGEX_OPTION_FIND_LONGEST,
+            &location,
         )?;
         Ok(Self {
             leftmost,
