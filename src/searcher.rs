@@ -724,21 +724,20 @@ impl<'a> Searcher<'a> {
         Path::new(unsafe { OsStr::from_encoded_bytes_unchecked(bytes) })
     }
 
-    /// Collapse a run of trailing slashes to one, as GNU grep (via fts) does
-    /// for a directory operand, so `tree//` walks as `tree/sub/...` rather
-    /// than `tree//sub/...`. Inner slashes are kept, and so is an operand of
-    /// two characters or less such as `//`.
+    /// Reduce a run of trailing slashes on a directory operand to a single
+    /// slash, as GNU grep does, so `tree//` walks as `tree/sub/...` rather
+    /// than `tree//sub/...`. Slashes inside the operand are left alone, and
+    /// so is an operand made only of slashes.
     fn trim_trailing_slashes(path: &Path) -> &Path {
         let bytes = path.as_os_str().as_encoded_bytes();
-        let mut len = bytes.len();
-        if len > 2 && bytes[len - 1] == b'/' {
-            while len > 1 && bytes[len - 2] == b'/' {
-                len -= 1;
-            }
-        }
+        let keep = match bytes.iter().rposition(|&b| b != b'/') {
+            // Keep the last non-slash byte plus at most one slash after it.
+            Some(last) => bytes.len().min(last + 2),
+            None => bytes.len(),
+        };
 
         // SAFETY: We only sliced off ASCII slashes from the end of `path`.
-        Path::new(unsafe { OsStr::from_encoded_bytes_unchecked(&bytes[..len]) })
+        Path::new(unsafe { OsStr::from_encoded_bytes_unchecked(&bytes[..keep]) })
     }
 
     fn is_special_file(path: &Path) -> bool {
