@@ -326,18 +326,16 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         // Color output requires an explicit --color option.
         _ => ColorMode::Never,
     };
+    // With "-o" the context lines themselves are not printed (see
+    // `Writer::write_line`), but GNU grep still tracks the context groups and
+    // prints the group separator between groups that are not adjacent.
     let (before_context, after_context, has_context) = {
-        // "-o" overrides any context arguments
-        if only_matching {
-            (0, 0, false)
-        } else {
-            let fallback = context.unwrap_or(0);
-            let before = before_context.unwrap_or(fallback);
-            let after = after_context.unwrap_or(fallback);
-            let has = context.is_some() || before_context.is_some() || after_context.is_some();
+        let fallback = context.unwrap_or(0);
+        let before = before_context.unwrap_or(fallback);
+        let after = after_context.unwrap_or(fallback);
+        let has = context.is_some() || before_context.is_some() || after_context.is_some();
 
-            (before, after, has)
-        }
+        (before, after, has)
     };
     // --include, --exclude and --exclude-from in command-line order.
     let mut globs: Vec<(usize, bool, String)> = Vec::new();

@@ -2153,3 +2153,47 @@ fn only_matching_with_context() {
         .succeeds()
         .stdout_only("4:xx\n");
 }
+
+#[test]
+fn only_matching_with_context_keeps_group_separator() {
+    // `-o` does not print context lines, but like GNU grep it still prints the
+    // separator between context groups that are not adjacent.
+    let input = "foo 1\nline 2\nline 3\nfoo 4\nline 5\n";
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "-A1", "foo"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("foo\n--\nfoo\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "-B1", "foo"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("foo\n--\nfoo\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "-A0", "foo"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("foo\n--\nfoo\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "--group-separator=XX", "-A1", "foo"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("foo\nXX\nfoo\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "--no-group-separator", "-A1", "foo"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("foo\nfoo\n");
+
+    // Adjacent groups (context 1-2 and 3-5 touch) get no separator.
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "-n", "-C1", "foo"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("1:foo\n4:foo\n");
+}

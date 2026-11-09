@@ -52,8 +52,13 @@ impl<'a> OutputWriter<'a> {
 
     /// Write a matching or context line.
     pub fn write_line(&mut self, view: &LineView<'_>, filename: &Path) -> io::Result<()> {
-        if self.config.only_matching && view.is_match {
-            self.write_only_matching(view, filename)
+        if self.config.only_matching {
+            if view.is_match {
+                self.write_only_matching(view, filename)
+            } else {
+                // `-o` never prints context lines.
+                Ok(())
+            }
         } else {
             self.write_line_with_matches(view, filename)
         }
