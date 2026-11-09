@@ -166,6 +166,7 @@ impl<'a> Searcher<'a> {
         start: &Path,
         strip_root: bool,
     ) -> ControlFlow<()> {
+        let start = Self::trim_trailing_slashes(start);
         let mut walker = WalkDir::new(start)
             .follow_links(self.config.follow_symlinks)
             .into_iter();
@@ -730,6 +731,23 @@ impl<'a> Searcher<'a> {
 
         // SAFETY: We sliced off a pure ASCII prefix off of `path`.
         Path::new(unsafe { OsStr::from_encoded_bytes_unchecked(bytes) })
+    }
+
+    /// Collapse a run of trailing slashes to one, as GNU grep (via fts) does
+    /// for a directory operand, so `tree//` walks as `tree/sub/...` rather
+    /// than `tree//sub/...`. Inner slashes are kept, and so is an operand of
+    /// two characters or less such as `//`.
+    fn trim_trailing_slashes(path: &Path) -> &Path {
+        let bytes = path.as_os_str().as_encoded_bytes();
+        let mut len = bytes.len();
+        if len > 2 && bytes[len - 1] == b'/' {
+            while len > 1 && bytes[len - 2] == b'/' {
+                len -= 1;
+            }
+        }
+
+        // SAFETY: We only sliced off ASCII slashes from the end of `path`.
+        Path::new(unsafe { OsStr::from_encoded_bytes_unchecked(&bytes[..len]) })
     }
 
     fn is_special_file(path: &Path) -> bool {

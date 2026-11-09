@@ -1586,6 +1586,27 @@ fn recursive_no_file_defaults_to_cwd_not_stdin() {
         .stdout_contains("a.txt");
 }
 
+// Windows joins walked names with `\`, so the exact output differs there.
+#[cfg(unix)]
+#[test]
+fn recursive_collapses_repeated_trailing_slashes() {
+    // GNU grep (via fts) collapses the trailing slashes of a directory operand
+    // to one, but keeps inner slashes and a lone `//`.
+    let (scene, _) = ucmd();
+    build_tree(&scene);
+    for (operand, expected) in [
+        ("tree//sub//", "tree//sub/c.txt:grep me\n"),
+        ("tree/sub///", "tree/sub/c.txt:grep me\n"),
+        ("tree/sub/", "tree/sub/c.txt:grep me\n"),
+    ] {
+        scene
+            .cmd(env!("CARGO_BIN_EXE_grep"))
+            .args(&["-r", "grep", operand])
+            .succeeds()
+            .stdout_only(expected);
+    }
+}
+
 #[test]
 fn recursive_implicit_cwd_strips_dot_prefix() {
     // `-r` with no path argument searches the implicit ".", so reported paths
