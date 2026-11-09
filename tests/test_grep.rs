@@ -169,12 +169,15 @@ fn pattern_file_compile_error_names_file_and_line() {
     // GNU grep prefixes a syntax error in a pattern read with `-f FILE` with
     // `FILE:LINE: `, so the user knows which line of the file to fix.
     let (scene, mut c) = ucmd();
-    scene.fixtures.write("pats", "foo\n[z-a]\n");
+    // Empty lines and duplicate patterns still count as lines.
+    scene.fixtures.write("pats", "foo\n\nfoo\n[z-a]\n");
     c.args(&["-f", "pats"])
         .pipe_in("foo\n")
+        // grep fails before reading standard input.
+        .ignore_stdin_write_error()
         .fails_with_code(2)
         .no_stdout()
-        .stderr_is("grep: pats:2: Invalid range end\n");
+        .stderr_is("grep: pats:4: Invalid range end\n");
 
     // `-f -` reads standard input, which GNU names `-`.
     let (_s, mut c) = ucmd();
@@ -189,6 +192,7 @@ fn pattern_file_compile_error_names_file_and_line() {
     scene.fixtures.write("bad", "[z-a]\n");
     c.args(&["-E", "-f", "ok", "-f", "bad"])
         .pipe_in("foo\n")
+        .ignore_stdin_write_error()
         .fails_with_code(2)
         .stderr_is("grep: bad:1: Invalid range end\n");
 
@@ -197,12 +201,14 @@ fn pattern_file_compile_error_names_file_and_line() {
     let (_s, mut c) = ucmd();
     c.args(&["-e", "[z-a]"])
         .pipe_in("foo\n")
+        .ignore_stdin_write_error()
         .fails_with_code(2)
         .stderr_is("grep: Invalid range end\n");
     let (scene, mut c) = ucmd();
     scene.fixtures.write("pcre", "(\n");
     c.args(&["-P", "-f", "pcre"])
         .pipe_in("foo\n")
+        .ignore_stdin_write_error()
         .fails_with_code(2)
         .stderr_does_not_contain("pcre:1:");
 }
