@@ -1069,7 +1069,9 @@ fn initial_tab_pads_to_the_input_size() {
         .succeeds()
         .stdout_only(&expected);
 
-    // A pipe has no size, so it gets the fixed width.
+    // A pipe has no size, so it gets the fixed width. On Windows the
+    // metadata of a pipe looks like a regular file's.
+    #[cfg(unix)]
     scene
         .cmd(env!("CARGO_BIN_EXE_grep"))
         .args(&["-bT", "x"])
