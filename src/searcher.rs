@@ -39,6 +39,11 @@ pub struct Searcher<'a> {
     session_last_match_end: u64,
 }
 
+/// The `-T` field width for an input of `size` bytes: the digits of its size.
+fn padded_width(size: u64) -> usize {
+    size.max(1).ilog10() as usize + 1
+}
+
 impl<'a> Searcher<'a> {
     pub fn new(config: &'a Config<'a>, matcher: Matcher<'a>, writer: OutputWriter<'a>) -> Self {
         Self {
@@ -111,7 +116,7 @@ impl<'a> Searcher<'a> {
         // length; anything else (a pipe, a terminal) gets a fixed width.
         if self.writer.wants_padded_line_numbers() {
             let width = match stdin.metadata() {
-                Ok(m) if m.is_file() => m.len().max(1).ilog10() as usize + 1,
+                Ok(m) if m.is_file() => padded_width(m.len()),
                 _ => 19,
             };
             self.writer.set_line_number_width(width);
@@ -213,8 +218,7 @@ impl<'a> Searcher<'a> {
         let result = File::open(path).and_then(|mut file| {
             if self.writer.wants_padded_line_numbers() {
                 let file_size = file.metadata().map_or(0, |m| m.len());
-                self.writer
-                    .set_line_number_width(file_size.max(1).ilog10() as usize + 1);
+                self.writer.set_line_number_width(padded_width(file_size));
             }
             self.session_run(lb, path, &mut file)
         });
