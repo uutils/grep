@@ -1,0 +1,30 @@
+name: cygwin
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# End the current execution if there is a new changeset in the PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  cygwin:
+    name: test cygwin
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: setup toolchain
+      shell: 'C:\msys64\usr\bin\bash.exe --login -eo pipefail {0}'
+      run: pacman -Sy --noconfirm --needed rust
+    - name: test
+      shell: 'C:\msys64\usr\bin\bash.exe --login -eo pipefail {0}'
+      env:
+        CHERE_INVOKING: 1
+      run: cargo test --target x86_64-pc-cygwin

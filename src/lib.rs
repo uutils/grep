@@ -353,15 +353,18 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         matches.indices_of("exclude_from"),
     ) {
         for (i, path) in indices.zip(paths) {
+            let label = if path == "-" {
+                "(standard input)"
+            } else {
+                path.as_str()
+            };
             let contents = if path == "-" {
                 let mut buf = String::new();
-                std::io::stdin()
-                    .read_to_string(&mut buf)
-                    .map_err(|err| read_error("(standard input)", &err))?;
-                buf
+                std::io::stdin().read_to_string(&mut buf).map(|_| buf)
             } else {
-                std::fs::read_to_string(path).map_err(|err| read_error(path, &err))?
-            };
+                std::fs::read_to_string(path)
+            }
+            .map_err(|err| read_error(label, &err))?;
             for line in contents.lines() {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
