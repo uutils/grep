@@ -1616,6 +1616,19 @@ fn recursive_with_include_exclude() {
 }
 
 #[test]
+fn exclude_dir_ignores_trailing_slashes() {
+    let (scene, _) = ucmd();
+    build_tree(&scene);
+    for value in ["--exclude-dir=sub/", "--exclude-dir=sub//"] {
+        let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+        c.args(&["-r", "-l", value, "grep", "tree"])
+            .succeeds()
+            .stdout_contains("a.txt")
+            .stdout_does_not_contain("c.txt");
+    }
+}
+
+#[test]
 fn recursive_include_exclude_last_match_wins() {
     let (scene, _) = ucmd();
     build_tree(&scene);
