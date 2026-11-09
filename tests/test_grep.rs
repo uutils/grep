@@ -1659,6 +1659,19 @@ fn recursive_exclude_from_file() {
         .stdout_does_not_contain("b.log");
 }
 
+#[test]
+fn exclude_from_dash_reads_standard_input() {
+    // GNU grep reads the exclude list from standard input when the operand is
+    // `-`; uu_grep used to look for a file literally named `-`.
+    let (scene, mut c) = ucmd();
+    build_tree(&scene);
+    c.args(&["-r", "-l", "--exclude-from=-", "grep", "tree"])
+        .pipe_in("*.log\n")
+        .succeeds()
+        .stdout_contains("a.txt")
+        .stdout_does_not_contain("b.log");
+}
+
 #[cfg(unix)]
 #[test]
 fn dereference_recursive_follows_symlinks() {
