@@ -137,6 +137,21 @@ fn read_error(label: impl std::fmt::Display, err: &std::io::Error) -> Box<dyn UE
     USimpleError::new(2, format!("{label}: {}", strip_errno(err)))
 }
 
+/// Read a file named by `-f` or `--exclude-from`, where `-` means standard
+/// input. The label for an error message is returned together with the result,
+/// so both operands go through one `-` check.
+fn read_pattern_file(path: &str) -> (&str, std::io::Result<String>) {
+    if path == "-" {
+        let mut buf = String::new();
+        (
+            "(standard input)",
+            std::io::stdin().read_to_string(&mut buf).map(|_| buf),
+        )
+    } else {
+        (path, std::fs::read_to_string(path))
+    }
+}
+
 #[uucore::main(no_signals)]
 pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let args = expand_num_shorthand(args);
@@ -241,16 +256,8 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         }
 
         for path in file_pattern {
-            let contents = if *path == "-" {
-                let mut buf = String::new();
-                std::io::stdin()
-                    .read_to_string(&mut buf)
-                    .map_err(|err| read_error("(standard input)", &err))?;
-                buf
-            } else {
-                std::fs::read_to_string(path).map_err(|err| read_error(path, &err))?
-            };
-            pattern_strings.push(contents);
+            let (label, contents) = read_pattern_file(path);
+            pattern_strings.push(contents.map_err(|err| read_error(label, &err))?);
         }
         for contents in &pattern_strings {
             if !contents.is_empty() {
@@ -353,7 +360,8 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         matches.indices_of("exclude_from"),
     ) {
         for (i, path) in indices.zip(paths) {
-            let contents = std::fs::read_to_string(path).map_err(|err| read_error(path, &err))?;
+            let (label, contents) = read_pattern_file(path);
+            let contents = contents.map_err(|err| read_error(label, &err))?;
             for line in contents.lines() {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
