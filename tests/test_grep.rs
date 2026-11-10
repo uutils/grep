@@ -1666,10 +1666,7 @@ fn exclude_from_dash_reads_standard_input() {
     let (scene, mut c) = ucmd();
     build_tree(&scene);
     c.args(&["-r", "-l", "--exclude-from=-", "grep", "tree"])
-        .pipe_in(
-            "*.log
-",
-        )
+        .pipe_in("*.log\n")
         .succeeds()
         .stdout_contains("a.txt")
         .stdout_does_not_contain("b.log");
