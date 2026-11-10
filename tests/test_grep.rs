@@ -1649,11 +1649,19 @@ fn recursive_with_include_exclude() {
         .stdout_contains("a.txt")
         .stdout_does_not_contain("b.log");
 
-    // exclude-dir filters whole directories.
-    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
-    c.args(&["-r", "-l", "--exclude-dir=sub", "grep", "tree"])
-        .succeeds()
-        .stdout_does_not_contain("c.txt");
+    // exclude-dir filters whole directories; like GNU grep, trailing
+    // slashes in the name are ignored.
+    for value in [
+        "--exclude-dir=sub",
+        "--exclude-dir=sub/",
+        "--exclude-dir=sub//",
+    ] {
+        let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+        c.args(&["-r", "-l", value, "grep", "tree"])
+            .succeeds()
+            .stdout_contains("a.txt")
+            .stdout_does_not_contain("c.txt");
+    }
 
     // include + exclude both apply (exclude wins on conflict).
     let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
