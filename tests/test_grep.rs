@@ -164,6 +164,13 @@ fn reversed_range_endpoints_match_gnu_message() {
     }
 }
 
+/// Prefix of an error reported through uucore, which names the binary as
+/// invoked: `grep.exe` on Windows.
+fn uucore_error(message: &str) -> String {
+    let name = if cfg!(windows) { "grep.exe" } else { "grep" };
+    format!("{name}: {message}\n")
+}
+
 #[test]
 fn pattern_file_compile_error_names_file_and_line() {
     // GNU grep prefixes a syntax error in a pattern read with `-f FILE` with
@@ -177,14 +184,14 @@ fn pattern_file_compile_error_names_file_and_line() {
         .ignore_stdin_write_error()
         .fails_with_code(2)
         .no_stdout()
-        .stderr_is("grep: pats:4: Invalid range end\n");
+        .stderr_is(uucore_error("pats:4: Invalid range end"));
 
     // `-f -` reads standard input, which GNU names `-`.
     let (_s, mut c) = ucmd();
     c.args(&["-f", "-"])
         .pipe_in("x\n[z-a]\n")
         .fails_with_code(2)
-        .stderr_is("grep: -:2: Invalid range end\n");
+        .stderr_is(uucore_error("-:2: Invalid range end"));
 
     // The line is counted per file, also in extended mode.
     let (scene, mut c) = ucmd();
@@ -194,7 +201,7 @@ fn pattern_file_compile_error_names_file_and_line() {
         .pipe_in("foo\n")
         .ignore_stdin_write_error()
         .fails_with_code(2)
-        .stderr_is("grep: bad:1: Invalid range end\n");
+        .stderr_is(uucore_error("bad:1: Invalid range end"));
 
     // Patterns from `-e` or the command line get no prefix, and neither do
     // errors from the PCRE backend.
@@ -203,7 +210,7 @@ fn pattern_file_compile_error_names_file_and_line() {
         .pipe_in("foo\n")
         .ignore_stdin_write_error()
         .fails_with_code(2)
-        .stderr_is("grep: Invalid range end\n");
+        .stderr_is(uucore_error("Invalid range end"));
     let (scene, mut c) = ucmd();
     scene.fixtures.write("pcre", "(\n");
     c.args(&["-P", "-f", "pcre"])
