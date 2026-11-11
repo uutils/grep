@@ -164,6 +164,62 @@ fn reversed_range_endpoints_match_gnu_message() {
     }
 }
 
+/// Prefix of an error reported through uucore, which names the binary as
+/// invoked: `grep.exe` on Windows.
+fn uucore_error(message: &str) -> String {
+    let name = if cfg!(windows) { "grep.exe" } else { "grep" };
+    format!("{name}: {message}\n")
+}
+
+#[test]
+fn pattern_file_compile_error_names_file_and_line() {
+    // GNU grep prefixes a syntax error in a pattern read with `-f FILE` with
+    // `FILE:LINE: `, so the user knows which line of the file to fix.
+    let (scene, mut c) = ucmd();
+    // Empty lines and duplicate patterns still count as lines.
+    scene.fixtures.write("pats", "foo\n\nfoo\n[z-a]\n");
+    c.args(&["-f", "pats"])
+        .pipe_in("foo\n")
+        // grep fails before reading standard input.
+        .ignore_stdin_write_error()
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_is(uucore_error("pats:4: Invalid range end"));
+
+    // `-f -` reads standard input, which GNU names `-`.
+    let (_s, mut c) = ucmd();
+    c.args(&["-f", "-"])
+        .pipe_in("x\n[z-a]\n")
+        .fails_with_code(2)
+        .stderr_is(uucore_error("-:2: Invalid range end"));
+
+    // The line is counted per file, also in extended mode.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("ok", "foo\nbar\n");
+    scene.fixtures.write("bad", "[z-a]\n");
+    c.args(&["-E", "-f", "ok", "-f", "bad"])
+        .pipe_in("foo\n")
+        .ignore_stdin_write_error()
+        .fails_with_code(2)
+        .stderr_is(uucore_error("bad:1: Invalid range end"));
+
+    // Patterns from `-e` or the command line get no prefix, and neither do
+    // errors from the PCRE backend.
+    let (_s, mut c) = ucmd();
+    c.args(&["-e", "[z-a]"])
+        .pipe_in("foo\n")
+        .ignore_stdin_write_error()
+        .fails_with_code(2)
+        .stderr_is(uucore_error("Invalid range end"));
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("pcre", "(\n");
+    c.args(&["-P", "-f", "pcre"])
+        .pipe_in("foo\n")
+        .ignore_stdin_write_error()
+        .fails_with_code(2)
+        .stderr_does_not_contain("pcre:1:");
+}
+
 #[test]
 fn unreadable_pattern_file_is_error() {
     // An unreadable -f / --exclude-from file is a usage error (exit 2), not the
