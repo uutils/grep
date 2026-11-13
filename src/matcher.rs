@@ -78,10 +78,7 @@ impl<'a> Matcher<'a> {
                 }
                 any_selected = true;
                 // Drop zero-length matches from the output.
-                if start == end {
-                    return false;
-                }
-                true
+                start != end
             })
             .collect();
 
