@@ -240,6 +240,18 @@ fn reversed_interval_is_error() {
             .fails_with_code(2)
             .stderr_contains("Invalid content of \\{\\}");
     }
+
+    for args in [&["-E", "[{2,1}]"][..], &["[{2,1}]"][..]] {
+        let (_s, mut c) = ucmd();
+        c.args(args).pipe_in("{\n").succeeds().stdout_only("{\n");
+    }
+    for args in [&["-E", "^fo{1,2}+$"][..], &["^fo\\{1,2\\}\\+$"][..]] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .pipe_in("foo\n")
+            .succeeds()
+            .stdout_only("foo\n");
+    }
 }
 
 #[test]
