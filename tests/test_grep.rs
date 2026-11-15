@@ -1963,7 +1963,9 @@ fn include_exclude_apply_to_command_line_files() {
     // A missing file is still reported.
     let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
     c.args(&["--exclude=missing", "grep", "missing"])
-        .fails_with_code(2);
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_contains("missing: ");
 }
 
 #[test]
@@ -2010,8 +2012,9 @@ fn include_exclude_regex_globs() {
 
     let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
     c.args(&["--exclude=[[:notaclass:]]", "grep", "tree/a.txt"])
-        .fails_with_code(2)
-        .stderr_contains("invalid glob");
+        .succeeds()
+        .stdout_is("grep me\n")
+        .no_stderr();
 
     scene.fixtures.write("[abc", "grep me\n");
     let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
