@@ -359,12 +359,12 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     globs.sort_by_key(|(i, _, _)| *i);
     let mut file_globs = GlobSet::with_capacity(globs.len());
     for (_, include, pattern) in &globs {
-        file_globs.add(*include, pattern)?;
+        file_globs.add(*include, pattern);
     }
     let exclude_dir_globs = {
         let mut patterns = GlobSet::with_capacity(exclude_dir.len());
         for pattern in exclude_dir {
-            patterns.add(false, pattern)?;
+            patterns.add(false, pattern);
         }
         patterns
     };

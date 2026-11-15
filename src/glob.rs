@@ -11,21 +11,14 @@ use onig::{RegexOptions, Syntax};
 use std::ffi::OsStr;
 use std::path::{Path, is_separator};
 use std::str::Chars;
-use uucore::error::{UResult, USimpleError};
 
-const SEPARATOR: &str = if cfg!(windows) {
-    r"[/\\]"
-} else if cfg!(target_os = "uefi") {
-    r"\\"
-} else {
-    "/"
-};
+const SEPARATOR: &str = if cfg!(windows) { r"[/\\]" } else { "/" };
 
 /// Include and exclude patterns, in command-line order. The last matching
 /// pattern decides; otherwise, skip only if the first pattern is an include.
 #[derive(Default)]
 pub struct GlobSet {
-    patterns: Vec<(bool, OnigRegex)>,
+    patterns: Vec<(bool, Option<OnigRegex>)>,
 }
 
 impl GlobSet {
@@ -39,17 +32,17 @@ impl GlobSet {
         }
     }
 
-    pub(crate) fn add(&mut self, include: bool, pattern: &str) -> UResult<()> {
-        let regex = OnigRegex::compile(
-            &translate(pattern),
-            Syntax::perl_ng(),
-            RegexOptions::REGEX_OPTION_MULTILINE,
-        )
-        .map_err(|err| {
-            USimpleError::new(2, format!("invalid glob '{pattern}': {}", err.message))
-        })?;
+    /// Like GNU, an invalid pattern such as `[z-a]` matches nothing.
+    pub(crate) fn add(&mut self, include: bool, pattern: &str) {
+        let regex = translate(pattern).and_then(|regex| {
+            OnigRegex::compile(
+                &regex,
+                Syntax::perl_ng(),
+                RegexOptions::REGEX_OPTION_MULTILINE,
+            )
+            .ok()
+        });
         self.patterns.push((include, regex));
-        Ok(())
     }
 
     /// Match a recursive entry's basename, not its path suffixes.
@@ -69,12 +62,12 @@ impl GlobSet {
             return false;
         }
 
-        let name = name.to_str().map(str::as_bytes);
+        let name = name.as_encoded_bytes();
         match self
             .patterns
             .iter()
             .rev()
-            .find(|(_, pattern)| name.is_some_and(|name| matches(pattern, name)))
+            .find(|(_, pattern)| pattern.as_ref().is_some_and(|p| matches(p, name)))
         {
             Some((include, _)) => !include,
             None => self.patterns[0].0,
@@ -82,7 +75,7 @@ impl GlobSet {
     }
 }
 
-fn translate(pattern: &str) -> String {
+fn translate(pattern: &str) -> Option<String> {
     // Exclude empty suffixes and positions inside a run of separators, but
     // allow any pattern (including a leading separator) at the start of input.
     let mut out = format!(r"(?:\A|(?<={SEPARATOR})(?!{SEPARATOR}|\z))");
@@ -97,13 +90,13 @@ fn translate(pattern: &str) -> String {
                 }
             }
             '\\' => push_literal(chars.next().unwrap_or('\\'), &mut out),
-            '[' => translate_class(&mut chars, &mut out),
+            '[' => translate_class(&mut chars, &mut out)?,
             _ if is_separator(c) => out.push_str(SEPARATOR),
             _ => push_literal(c, &mut out),
         }
     }
     out.push_str(r"\z");
-    out
+    Some(out)
 }
 
 fn push_literal(c: char, out: &mut String) {
@@ -113,8 +106,9 @@ fn push_literal(c: char, out: &mut String) {
     out.push(c);
 }
 
-fn translate_class(chars: &mut Chars<'_>, out: &mut String) {
+fn translate_class(chars: &mut Chars<'_>, out: &mut String) -> Option<()> {
     let start = out.len();
+    let mut separator = false;
     let mut body = chars.clone();
     out.push('[');
     if body.as_str().starts_with(['!', '^']) {
@@ -125,9 +119,12 @@ fn translate_class(chars: &mut Chars<'_>, out: &mut String) {
     while let Some(c) = body.next() {
         match c {
             ']' if !first => {
+                if separator {
+                    out.push_str(r"\\");
+                }
                 out.push(']');
                 *chars = body;
-                return;
+                return Some(());
             }
             '\\' => push_literal(body.next().unwrap_or('\\'), out),
             '[' => {
@@ -135,14 +132,26 @@ fn translate_class(chars: &mut Chars<'_>, out: &mut String) {
                 if let Some(&delimiter @ (b':' | b'.' | b'=')) = rest.as_bytes().first()
                     && let Some(end) = find_bracket_subexpr_end(rest.as_bytes(), 1, delimiter)
                 {
-                    out.push('[');
-                    out.push_str(&rest[..end]);
+                    if delimiter == b':' {
+                        out.push('[');
+                        out.push_str(&rest[..end]);
+                    } else {
+                        // `[.a.]` and `[=a=]` stand for the character itself.
+                        let mut inner = rest[1..end - 2].chars();
+                        let (Some(c), None) = (inner.next(), inner.next()) else {
+                            return None;
+                        };
+                        push_literal(c, out);
+                    }
                     body = rest[end..].chars();
                 } else {
                     out.push_str(r"\[");
                 }
             }
-            '/' if cfg!(windows) => out.push_str(r"/\\"),
+            '/' if cfg!(windows) => {
+                out.push('/');
+                separator = true;
+            }
             _ => out.push(c),
         }
         first = false;
@@ -151,6 +160,7 @@ fn translate_class(chars: &mut Chars<'_>, out: &mut String) {
     // An unclosed bracket is literal; leave the remaining input unconsumed.
     out.truncate(start);
     out.push_str(r"\[");
+    Some(())
 }
 
 #[cfg(test)]
@@ -176,7 +186,7 @@ mod tests {
 
     fn excluding(pattern: &str) -> GlobSet {
         let mut globs = GlobSet::new();
-        globs.add(false, pattern).unwrap();
+        globs.add(false, pattern);
         globs
     }
 
@@ -224,6 +234,9 @@ mod tests {
             (r"[\]]", &["]"], &[r"\", r"\]"]),
             (r"[\d]", &["d"], &["9"]),
             (r"[a\-z]", &["a", "-", "z"], &["m"]),
+            ("[[.a.]]", &["a"], &[".]", "[.a.]"]),
+            ("[[=a=]]", &["a"], &["=]", "[=a=]"]),
+            ("[[.-.]]", &["-"], &["a"]),
         ];
         assert_cases(cases);
     }
@@ -244,12 +257,11 @@ mod tests {
     }
 
     #[test]
-    fn regex_errors_are_reported() {
-        for pattern in ["[z-a]", "[[:notaclass:]]"] {
-            let mut globs = GlobSet::new();
-            let err = globs.add(false, pattern).unwrap_err();
-            assert!(err.to_string().contains("invalid glob"), "{pattern:?}");
-            assert!(globs.patterns.is_empty());
+    fn invalid_patterns_match_nothing() {
+        for pattern in ["[z-a]", "[[:notaclass:]]", "[[.ab.]]"] {
+            for name in ["a", "z", "ab", pattern] {
+                assert!(!excluding(pattern).skips(OsStr::new(name)), "{pattern:?}");
+            }
         }
     }
 
@@ -274,14 +286,15 @@ mod tests {
         assert!(globs.skips_command_line_file(Path::new(r"t\a.txt")));
         assert!(excluding("a.txt").skips_command_line_file(Path::new(r"t\\a.txt")));
         assert!(excluding("[/]").skips(OsStr::new(r"\")));
+        assert!(excluding("[/-0].txt").skips(OsStr::new("0.txt")));
     }
 
     #[test]
     fn last_matching_pattern_wins_across_suffixes() {
         for include_last in [false, true] {
             let mut globs = GlobSet::new();
-            globs.add(!include_last, "t/*").unwrap();
-            globs.add(include_last, "a.txt").unwrap();
+            globs.add(!include_last, "t/*");
+            globs.add(include_last, "a.txt");
             assert_eq!(
                 globs.skips_command_line_file(Path::new("t/a.txt")),
                 !include_last,
@@ -299,16 +312,13 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn non_utf8_names_keep_the_default_action() {
+    fn non_utf8_names_match() {
         use std::os::unix::ffi::OsStrExt;
 
-        let name = OsStr::from_bytes(b"t/\xff/a.txt");
-        assert!(!GlobSet::new().skips_command_line_file(Path::new(name)));
-        for include in [false, true] {
-            let mut globs = GlobSet::new();
-            globs.add(include, "*.txt").unwrap();
-            assert_eq!(globs.skips(name), include);
-            assert_eq!(globs.skips_command_line_file(Path::new(name)), include);
+        let name = OsStr::from_bytes(b"t\xff/a.txt");
+        for pattern in ["*.txt", "a.txt", "t?/a.txt"] {
+            assert!(excluding(pattern).skips_command_line_file(Path::new(name)));
         }
+        assert!(excluding("*.txt").skips(OsStr::from_bytes(b"\xff.txt")));
     }
 }
