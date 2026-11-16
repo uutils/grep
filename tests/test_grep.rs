@@ -1945,6 +1945,28 @@ fn null_data_mode_records() {
 }
 
 #[test]
+fn null_data_anchors_are_record_anchors() {
+    for args in [
+        &["-z", "-c", "^beta"][..],
+        &["-z", "-c", "-E", "alpha$"][..],
+        &["-z", "-c", "-P", "beta$"][..],
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .pipe_in("alpha\nbeta\n\0")
+            .fails_with_code(1)
+            .stdout_only("0\n");
+    }
+
+    // Anchors at the record edges still work.
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", "^alpha"])
+        .pipe_in("alpha\nbeta\0")
+        .succeeds()
+        .stdout_only("1\n");
+}
+
+#[test]
 fn exit_codes_basic_triad() {
     // 0: any match.
     let (_s, mut c) = ucmd();
