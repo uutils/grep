@@ -6,7 +6,6 @@ edition = "2024"
 rust-version = "1.88.0"
 version = "0.2.0"
 license = "MIT"
-homepage = "https://github.com/uutils/grep"
 keywords = ["grep", "uutils", "cross-platform", "cli", "utility"]
 categories = ["command-line-utilities"]
 
