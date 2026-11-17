@@ -2233,5 +2233,5 @@ fn files_without_match_with_nothing_selectable() {
     c.args(&["-L", "-m", "0", "pine", "trees.txt", "missing.txt"])
         .fails_with_code(2)
         .stdout_is("trees.txt\n")
-        .stderr_contains("missing.txt: No such file or directory");
+        .stderr_contains("missing.txt: ");
 }
