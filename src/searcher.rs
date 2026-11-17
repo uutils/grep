@@ -33,6 +33,10 @@ pub struct Searcher<'a> {
     session_after_remaining: usize,
     session_last_printed_line: u64, // 0 = nothing yet
     session_binary_detected: bool,
+    /// A selected line was withheld because it is not valid UTF-8. Unlike a
+    /// NUL byte this does not stop the output; it only makes the binary
+    /// notice appear once the file is done.
+    session_encoding_error: bool,
     /// Byte offset, relative to where this session started reading, just past
     /// the terminator of the last selected line. Used to rewind standard input
     /// when `-m` stops the search early.
@@ -63,6 +67,7 @@ impl<'a> Searcher<'a> {
             session_after_remaining: 0,
             session_last_printed_line: 0,
             session_binary_detected: false,
+            session_encoding_error: false,
             session_last_match_end: 0,
         }
     }
@@ -280,6 +285,16 @@ impl<'a> Searcher<'a> {
         self.binary_notice_enabled && self.session_binary_detected && self.session_any_match()
     }
 
+    /// Whether a selected line must be withheld because it is not valid UTF-8.
+    /// GNU grep leaves such lines out but keeps printing the others, and
+    /// reports the binary match once at the end.
+    fn session_withholds_line(&self, line: &[u8]) -> bool {
+        // TODO: GNU grep respects LANG. Here, I'm always checking for valid UTF-8.
+        self.config.binary_mode == BinaryMode::Binary
+            && !self.session_binary_detected
+            && std::str::from_utf8(line).is_err()
+    }
+
     /// Whether the current configuration can use the buffer-at-a-time fast
     /// path. It applies only to pure-literal patterns and the simpler output
     /// modes — anything needing match positions, context, inversion, or special
@@ -406,6 +421,8 @@ impl<'a> Searcher<'a> {
         let mut count: u64 = 0;
         let mut matched = false;
         let mut binary = false;
+        // A matching line was withheld for not being valid UTF-8.
+        let mut encoding_error = false;
         // Number of terminators in all previously consumed chunks (for `-n`).
         let mut base_lines: u64 = 0;
 
@@ -425,8 +442,7 @@ impl<'a> Searcher<'a> {
                 }
                 let (line_beg, line_end) = line_bounds(chunk, p + rel);
 
-                // A NUL anywhere up to this line marks the file binary, as does
-                // an invalid-UTF-8 matching line.
+                // A NUL anywhere up to this line marks the file binary.
                 if detect_binary && !binary {
                     if memchr(0, &chunk[nul_scanned..line_end]).is_some() {
                         binary = true;
@@ -442,15 +458,22 @@ impl<'a> Searcher<'a> {
                     line
                 };
 
-                if detect_binary && !binary && std::str::from_utf8(line).is_err() {
-                    binary = true;
-                }
-
                 if binary {
                     // First match in a binary file: stop and emit the notice
                     // once at the end instead of dumping the line.
                     matched = true;
                     break 'outer;
+                }
+
+                // An invalid-UTF-8 matching line is withheld, but the search
+                // goes on and the notice is emitted once at the end.
+                if detect_binary && std::str::from_utf8(line).is_err() {
+                    encoding_error = true;
+                    count += 1;
+                    matched = true;
+                    p = line_end + 1;
+                    self.session_last_match_end = chunk_off + p as u64;
+                    continue;
                 }
 
                 let line_number = if want_lineno {
@@ -487,7 +510,7 @@ impl<'a> Searcher<'a> {
 
         self.session_match_count = count;
 
-        if binary && notice_enabled && matched {
+        if (binary || encoding_error) && notice_enabled && matched {
             self.writer.report_binary_match(path);
         }
         Ok(matched)
@@ -509,6 +532,7 @@ impl<'a> Searcher<'a> {
         self.session_after_remaining = 0;
         self.session_last_printed_line = 0;
         self.session_binary_detected = false;
+        self.session_encoding_error = false;
         self.session_last_match_end = 0;
         lb.reset();
 
@@ -535,17 +559,20 @@ impl<'a> Searcher<'a> {
             }
 
             if let Some(positions) = self.session_match_line(line) {
-                // TODO: GNU grep respects LANG. Here, I'm always checking for valid UTF-8.
-                if self.config.binary_mode != BinaryMode::WithoutMatch
-                    && !self.session_mark_binary_if(|| std::str::from_utf8(line).is_err())
-                {
-                    return Ok(false);
-                }
+                let withhold = self.session_withholds_line(line);
+                self.session_encoding_error |= withhold;
 
                 self.session_last_match_end = after_line;
 
                 // Print the match and context, and update session state accordingly.
-                if !self.session_handle_match(path, line_number, line_start, line, &positions)? {
+                if !self.session_handle_match(
+                    path,
+                    line_number,
+                    line_start,
+                    line,
+                    &positions,
+                    withhold,
+                )? {
                     return Ok(true);
                 }
 
@@ -596,6 +623,7 @@ impl<'a> Searcher<'a> {
         byte_offset: u64,
         line: &[u8],
         positions: &[(usize, usize)],
+        withhold: bool,
     ) -> io::Result<bool> {
         self.session_match_count += 1;
 
@@ -620,10 +648,13 @@ impl<'a> Searcher<'a> {
                     is_match: true,
                     match_positions: positions,
                 },
+                withhold,
             )?;
         }
 
-        self.session_after_remaining = self.config.after_context;
+        if !withhold {
+            self.session_after_remaining = self.config.after_context;
+        }
         Ok(true)
     }
 
@@ -659,10 +690,13 @@ impl<'a> Searcher<'a> {
         Ok(())
     }
 
+    /// Write `view` preceded by its pending before-context. With `withhold`
+    /// only the context is written, not the line itself.
     fn session_write_match_with_context(
         &mut self,
         path: &Path,
         view: &LineView<'_>,
+        withhold: bool,
     ) -> io::Result<()> {
         let last_printed_line = self.session_last_printed_line;
         let mut context = self.session_context_buf.drain_iter().peekable();
@@ -693,6 +727,9 @@ impl<'a> Searcher<'a> {
             self.session_last_printed_line = ctx.line_number;
         }
 
+        if withhold {
+            return Ok(());
+        }
         self.writer.write_line(view, path)?;
         self.session_last_printed_line = view.line_number;
         Ok(())
@@ -710,7 +747,9 @@ impl<'a> Searcher<'a> {
             if self.config.files_without_match && !self.session_any_match() {
                 self.writer.write_filename(path)?;
             }
-            if self.session_should_emit_binary_notice() {
+            if self.session_should_emit_binary_notice()
+                || (self.binary_notice_enabled && self.session_encoding_error)
+            {
                 self.writer.report_binary_match(path);
             }
         }

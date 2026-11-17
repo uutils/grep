@@ -1492,6 +1492,33 @@ fn binary_detection_via_invalid_utf8() {
 }
 
 #[test]
+fn invalid_utf8_line_withheld_but_later_matches_printed() {
+    // Only the invalid line is left out; the other matches are still printed
+    // and the notice comes once, at the end. Covers the literal fast path and
+    // the line-at-a-time path.
+    let (scene, _) = ucmd();
+    scene
+        .fixtures
+        .write_bytes("u", b"foo 1\nfoo \xff 2\nfoo 3\n");
+    for pattern in ["foo", "fo."] {
+        scene
+            .cmd(env!("CARGO_BIN_EXE_grep"))
+            .args(&["-n", pattern, "u"])
+            .succeeds()
+            .stdout_is("1:foo 1\n3:foo 3\n")
+            .stderr_is("grep: u: binary file matches\n");
+
+        // The withheld line still counts towards -m.
+        scene
+            .cmd(env!("CARGO_BIN_EXE_grep"))
+            .args(&["-m2", pattern, "u"])
+            .succeeds()
+            .stdout_is("foo 1\n")
+            .stderr_is("grep: u: binary file matches\n");
+    }
+}
+
+#[test]
 fn lone_control_byte_is_still_text() {
     let (scene, mut c) = ucmd();
     scene.fixtures.write_bytes("ctl", b"a\x01b\n");
