@@ -2215,3 +2215,23 @@ fn only_matching_with_context() {
         .succeeds()
         .stdout_only("4:xx\n");
 }
+
+#[test]
+fn files_without_match_with_nothing_selectable() {
+    for args in [&["-L", "-m", "0", "pine"][..], &["-L", "-v", "-e", ""][..]] {
+        let (scene, mut c) = ucmd();
+        scene.fixtures.write("trees.txt", "pine\noak\n");
+        c.args(args)
+            .arg("trees.txt")
+            .fails_with_code(1)
+            .stdout_only("trees.txt\n");
+    }
+
+    // A file that cannot be read is still reported.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("trees.txt", "pine\n");
+    c.args(&["-L", "-m", "0", "pine", "trees.txt", "missing.txt"])
+        .fails_with_code(2)
+        .stdout_is("trees.txt\n")
+        .stderr_contains("missing.txt: No such file or directory");
+}
