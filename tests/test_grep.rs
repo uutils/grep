@@ -2215,3 +2215,34 @@ fn only_matching_with_context() {
         .succeeds()
         .stdout_only("4:xx\n");
 }
+
+#[test]
+fn grep_color_warning_only_when_used() {
+    // GREP_COLORS sets both match colors, so GREP_COLOR is not used.
+    for grep_colors in ["mt=35", "ms=35:mc=34"] {
+        let (_s, mut c) = ucmd();
+        c.env("GREP_COLOR", "36")
+            .env("GREP_COLORS", grep_colors)
+            .args(&["--color=always", "foo"])
+            .pipe_in("foo\n")
+            .succeeds()
+            .no_stderr();
+    }
+
+    // No search happens, so no color is used either.
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLOR", "36")
+        .args(&["--color=always", "-m0", "foo"])
+        .pipe_in("foo\n")
+        .fails_with_code(1)
+        .no_output();
+
+    // Only the selected color is overridden: the context color still comes from GREP_COLOR.
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLOR", "36")
+        .env("GREP_COLORS", "ms=35")
+        .args(&["--color=always", "foo"])
+        .pipe_in("foo\n")
+        .succeeds()
+        .stderr_is("grep: warning: GREP_COLOR='36' is deprecated; use GREP_COLORS='mt=36'\n");
+}

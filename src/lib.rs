@@ -401,12 +401,11 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
                 }
         }
     };
-    // GNU grep treats GREP_COLOR as deprecated: when it is set and color output
-    // is active, warn and point users at the GREP_COLORS 'mt' capability.
-    if use_color && !grep_color.is_empty() {
-        show_warning!("GREP_COLOR='{grep_color}' is deprecated; use GREP_COLORS='mt={grep_color}'");
-    }
     let color_config = ColorConfig::from_env(&grep_color, &grep_colors);
+    // GNU grep treats GREP_COLOR as deprecated: when color output is active and
+    // GREP_COLORS leaves it in charge of a match color, warn and point users at
+    // the GREP_COLORS 'mt' capability.
+    let warn_grep_color = use_color && color_config.uses(&grep_color);
 
     let config = Config {
         // Searcher
@@ -462,6 +461,10 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     // and exits as "no match" without reading any input files.
     if invert_match && patterns.iter().any(|pattern| pattern.is_empty()) {
         return Err(ExitCode::new(1));
+    }
+
+    if warn_grep_color {
+        show_warning!("GREP_COLOR='{grep_color}' is deprecated; use GREP_COLORS='mt={grep_color}'");
     }
 
     let writer = OutputWriter::new(&config);
@@ -1009,6 +1012,14 @@ fn is_color_value(value: &str) -> bool {
 }
 
 impl<'a> ColorConfig<'a> {
+    /// Whether `color`, a non-empty `GREP_COLOR` value, still sets the color of
+    /// selected or context matches after `GREP_COLORS` was applied.
+    fn uses(&self, color: &str) -> bool {
+        !color.is_empty()
+            && (std::ptr::eq(self.matched_selected, color)
+                || std::ptr::eq(self.matched_context, color))
+    }
+
     fn from_env(grep_color: &'a str, grep_colors: &'a str) -> Self {
         let mut config = Self {
             matched_selected: "01;31",
