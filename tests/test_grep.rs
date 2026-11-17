@@ -1368,6 +1368,40 @@ fn grep_color_env_is_deprecated_with_warning() {
 }
 
 #[test]
+fn grep_color_warning_only_when_used() {
+    // GREP_COLORS sets both match colors, so GREP_COLOR is not used.
+    for grep_colors in ["mt=35", "ms=35:mc=34"] {
+        let (_s, mut c) = ucmd();
+        c.env("GREP_COLOR", "36")
+            .env("GREP_COLORS", grep_colors)
+            .args(&["--color=always", "foo"])
+            .pipe_in("foo\n")
+            .succeeds()
+            .no_stderr();
+    }
+
+    // No search happens, so no color is used either.
+    for args in [["-m0", "foo"], ["-v", ""]] {
+        let (_s, mut c) = ucmd();
+        c.env("GREP_COLOR", "36")
+            .arg("--color=always")
+            .args(&args)
+            .pipe_in("foo\n")
+            .fails_with_code(1)
+            .no_output();
+    }
+
+    // Only the selected color is overridden: the context color still comes from GREP_COLOR.
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLOR", "36")
+        .env("GREP_COLORS", "ms=35")
+        .args(&["--color=always", "foo"])
+        .pipe_in("foo\n")
+        .succeeds()
+        .stderr_contains("warning: GREP_COLOR='36' is deprecated; use GREP_COLORS='mt=36'");
+}
+
+#[test]
 fn grep_color_env_no_warning_without_color() {
     // Without active color output, GREP_COLOR must not trigger the warning.
     let (_s, mut c) = ucmd();
@@ -2214,35 +2248,4 @@ fn only_matching_with_context() {
         .pipe_in("aa\nbb\ncc\nxx\n")
         .succeeds()
         .stdout_only("4:xx\n");
-}
-
-#[test]
-fn grep_color_warning_only_when_used() {
-    // GREP_COLORS sets both match colors, so GREP_COLOR is not used.
-    for grep_colors in ["mt=35", "ms=35:mc=34"] {
-        let (_s, mut c) = ucmd();
-        c.env("GREP_COLOR", "36")
-            .env("GREP_COLORS", grep_colors)
-            .args(&["--color=always", "foo"])
-            .pipe_in("foo\n")
-            .succeeds()
-            .no_stderr();
-    }
-
-    // No search happens, so no color is used either.
-    let (_s, mut c) = ucmd();
-    c.env("GREP_COLOR", "36")
-        .args(&["--color=always", "-m0", "foo"])
-        .pipe_in("foo\n")
-        .fails_with_code(1)
-        .no_output();
-
-    // Only the selected color is overridden: the context color still comes from GREP_COLOR.
-    let (_s, mut c) = ucmd();
-    c.env("GREP_COLOR", "36")
-        .env("GREP_COLORS", "ms=35")
-        .args(&["--color=always", "foo"])
-        .pipe_in("foo\n")
-        .succeeds()
-        .stderr_contains("warning: GREP_COLOR='36' is deprecated; use GREP_COLORS='mt=36'");
 }
