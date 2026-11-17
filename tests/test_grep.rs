@@ -2215,3 +2215,25 @@ fn only_matching_with_context() {
         .succeeds()
         .stdout_only("4:xx\n");
 }
+
+#[test]
+fn ere_empty_interval_is_error() {
+    for pattern in ["zq{}", "(zq){}", "[z]{}", "z*{}"] {
+        let (_s, mut c) = ucmd();
+        c.args(&["-E", pattern])
+            .pipe_in("zq{}\n")
+            .ignore_stdin_write_error()
+            .fails_with_code(2)
+            .no_stdout()
+            .stderr_contains("Invalid content of \\{\\}");
+    }
+
+    // A brace that cannot start an interval stays literal.
+    for pattern in ["zq{w", "{}", "x|{}", "({})", "zq\\{}"] {
+        let (_s, mut c) = ucmd();
+        c.args(&["-E", "-c", pattern])
+            .pipe_in("zq{w\nzq{}\n")
+            .succeeds()
+            .stdout_only("1\n");
+    }
+}
