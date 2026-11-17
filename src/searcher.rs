@@ -351,9 +351,6 @@ impl<'a> Searcher<'a> {
                 let Some(rel) = leftmost_match(finders, &chunk[p..]) else {
                     break;
                 };
-                if max.is_some_and(|mx| count >= mx) {
-                    break 'outer;
-                }
                 let (_, line_end) = line_bounds(chunk, p + rel);
                 count += 1;
                 matched = true;
@@ -425,9 +422,6 @@ impl<'a> Searcher<'a> {
                 let Some(rel) = leftmost_match(finders, &chunk[p..]) else {
                     break;
                 };
-                if max.is_some_and(|mx| count >= mx) {
-                    break 'outer;
-                }
                 let (line_beg, line_end) = line_bounds(chunk, p + rel);
 
                 // A NUL anywhere up to this line marks the file binary, as does
