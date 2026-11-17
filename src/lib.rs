@@ -16,8 +16,8 @@ use crate::line_buffer::LineBuffer;
 use crate::matcher::Matcher;
 use crate::output::OutputWriter;
 use crate::searcher::Searcher;
-use clap::builder::PossibleValue;
-use clap::{Arg, ArgAction, Command};
+use clap::builder::{EnumValueParser, PossibleValue};
+use clap::{Arg, ArgAction, Command, ValueEnum};
 use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal as _, Read};
 use std::path::Path;
@@ -203,9 +203,11 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         .get_one::<String>("group_separator")
         .map_or("--", |s| s.as_str());
     let no_group_separator = matches.get_flag("no_group_separator");
+    // Color output requires an explicit --color option.
     let color = matches
-        .get_one::<String>("color")
-        .map_or("", |s| s.as_str());
+        .get_one::<ColorMode>("color")
+        .copied()
+        .unwrap_or(ColorMode::Never);
     #[cfg(windows)]
     let binary = matches.get_flag("binary");
 
@@ -320,15 +322,6 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         Some("read") => DeviceMode::Read,
         Some("skip") => DeviceMode::Skip,
         _ => DeviceMode::Default,
-    };
-    let color = color_when_values()
-        .into_iter()
-        .find(|when| when.matches(color, true));
-    let color = match color.as_ref().map(PossibleValue::get_name) {
-        Some("always") => ColorMode::Always,
-        Some("auto") => ColorMode::Auto,
-        // Color output requires an explicit --color option.
-        _ => ColorMode::Never,
     };
     let (before_context, after_context, has_context) = {
         // "-o" overrides any context arguments
@@ -847,7 +840,7 @@ pub fn uu_app() -> Command {
                 .alias("colour")
                 .value_name("WHEN")
                 .help("use markers to highlight the matching strings; WHEN is 'always', 'never', or 'auto'")
-                .value_parser(color_when_values())
+                .value_parser(EnumValueParser::<ColorMode>::new())
                 .ignore_case(true)
                 .default_missing_value("auto")
                 .num_args(0..=1)
@@ -1010,12 +1003,18 @@ impl GlobSet {
 }
 
 /// The `--color` arguments. Like GNU grep, accept the synonyms in any case.
-fn color_when_values() -> [PossibleValue; 3] {
-    [
-        PossibleValue::new("always").aliases(["yes", "force"]),
-        PossibleValue::new("never").aliases(["no", "none"]),
-        PossibleValue::new("auto").aliases(["tty", "if-tty"]),
-    ]
+impl ValueEnum for ColorMode {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Always, Self::Never, Self::Auto]
+    }
+
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        Some(match self {
+            Self::Always => PossibleValue::new("always").aliases(["yes", "force"]),
+            Self::Never => PossibleValue::new("never").aliases(["no", "none"]),
+            Self::Auto => PossibleValue::new("auto").aliases(["tty", "if-tty"]),
+        })
+    }
 }
 
 fn is_color_value(value: &str) -> bool {
