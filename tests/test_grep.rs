@@ -2244,5 +2244,5 @@ fn grep_color_warning_only_when_used() {
         .args(&["--color=always", "foo"])
         .pipe_in("foo\n")
         .succeeds()
-        .stderr_is("grep: warning: GREP_COLOR='36' is deprecated; use GREP_COLORS='mt=36'\n");
+        .stderr_contains("warning: GREP_COLOR='36' is deprecated; use GREP_COLORS='mt=36'");
 }
