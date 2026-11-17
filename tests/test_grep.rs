@@ -1946,24 +1946,43 @@ fn null_data_mode_records() {
 
 #[test]
 fn null_data_anchors_are_record_anchors() {
-    for args in [
-        &["-z", "-c", "^beta"][..],
-        &["-z", "-c", "-E", "alpha$"][..],
-        &["-z", "-c", "-P", "beta$"][..],
-    ] {
+    // Anchors must not match next to an internal newline.
+    let failing_cases = [
+        // Existing cases.
+        (&["-z", "-c", "^beta"][..], "alpha\nbeta\n\0"),
+        (&["-z", "-c", "-E", "alpha$"][..], "alpha\nbeta\n\0"),
+        (&["-z", "-c", "-P", "beta$"][..], "alpha\nbeta\n\0"),
+        // BRE: `$` before alternation is a record anchor.
+        (&["-z", "-c", r"alpha$\|x"][..], "alpha\nbeta\0"),
+        // BRE: `$` inside a group is a record anchor.
+        (&["-z", "-c", r"\(alpha$\)"][..], "alpha\nbeta\0"),
+        // ERE: `^` must not match after an internal newline.
+        (&["-z", "-c", "-E", "^beta"][..], "alpha\nbeta\0"),
+    ];
+
+    for (args, input) in failing_cases {
         let (_s, mut c) = ucmd();
         c.args(args)
-            .pipe_in("alpha\nbeta\n\0")
+            .pipe_in(input)
             .fails_with_code(1)
             .stdout_only("0\n");
     }
 
-    // Anchors at the record edges still work.
-    let (_s, mut c) = ucmd();
-    c.args(&["-z", "-c", "^alpha"])
-        .pipe_in("alpha\nbeta\0")
-        .succeeds()
-        .stdout_only("1\n");
+    // Anchors at the record edges must still match.
+    let matching_cases = [
+        &["-z", "-c", "^alpha"][..],
+        &["-z", "-c", "beta$"][..],
+        &["-z", "-c", "-E", "beta$"][..],
+        &["-z", "-c", "-P", "beta$"][..],
+    ];
+
+    for args in matching_cases {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .pipe_in("alpha\nbeta\0")
+            .succeeds()
+            .stdout_only("1\n");
+    }
 }
 
 #[test]
@@ -2230,49 +2249,4 @@ fn only_matching_with_context() {
         .pipe_in("aa\nbb\ncc\nxx\n")
         .succeeds()
         .stdout_only("4:xx\n");
-}
-
-#[test]
-fn null_data_anchors_cover_bre_ere_and_record_end() {
-    // BRE: `$` before alternation is a record anchor.
-    let (_s, mut c) = ucmd();
-    c.args(&["-z", "-c", r"alpha$\|x"])
-        .pipe_in("alpha\nbeta\0")
-        .fails_with_code(1)
-        .stdout_only("0\n");
-
-    // BRE: `$` inside a group is a record anchor.
-    let (_s, mut c) = ucmd();
-    c.args(&["-z", "-c", r"\(alpha$\)"])
-        .pipe_in("alpha\nbeta\0")
-        .fails_with_code(1)
-        .stdout_only("0\n");
-
-    // ERE: `^` must not match after an internal newline.
-    let (_s, mut c) = ucmd();
-    c.args(&["-z", "-c", "-E", "^beta"])
-        .pipe_in("alpha\nbeta\0")
-        .fails_with_code(1)
-        .stdout_only("0\n");
-
-    // BRE: `$` must still match the actual record end.
-    let (_s, mut c) = ucmd();
-    c.args(&["-z", "-c", "beta$"])
-        .pipe_in("alpha\nbeta\0")
-        .succeeds()
-        .stdout_only("1\n");
-
-    // ERE: `$` must still match the actual record end.
-    let (_s, mut c) = ucmd();
-    c.args(&["-z", "-c", "-E", "beta$"])
-        .pipe_in("alpha\nbeta\0")
-        .succeeds()
-        .stdout_only("1\n");
-
-    // Perl: `$` must still match the actual record end.
-    let (_s, mut c) = ucmd();
-    c.args(&["-z", "-c", "-P", "beta$"])
-        .pipe_in("alpha\nbeta\0")
-        .succeeds()
-        .stdout_only("1\n");
 }
