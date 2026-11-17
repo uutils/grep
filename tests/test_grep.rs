@@ -1213,7 +1213,12 @@ fn num_shorthand_allows_non_ascii_attached_values() {
     // the cluster the invalid option it would be without the digit.
     let fails = |args: &[&str]| {
         let (_s, mut c) = ucmd();
-        c.args(args).pipe_in("x\n").fails().code_is(2);
+        // A usage error exits before reading stdin, so the write may hit EPIPE.
+        c.args(args)
+            .ignore_stdin_write_error()
+            .pipe_in("x\n")
+            .fails()
+            .code_is(2);
     };
     fails(&["-🙂2", "x"]);
     fails(&["-2🙂3", "x"]);
@@ -1229,6 +1234,7 @@ fn num_shorthand_preserves_invalid_utf8_arguments() {
     let (_s, mut c) = ucmd();
     c.arg(OsString::from_vec(vec![b'-', b'w', b'2', 0xff]))
         .arg("x")
+        .ignore_stdin_write_error()
         .pipe_in("x\n")
         .fails();
 }
