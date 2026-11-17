@@ -37,6 +37,10 @@ pub struct Searcher<'a> {
     /// NUL byte this does not stop the output; it only makes the binary
     /// notice appear once the file is done.
     session_encoding_error: bool,
+    /// The locale uses UTF-8, so an invalid-UTF-8 selected line is withheld
+    /// while the search goes on. In a unibyte locale such a line instead marks
+    /// the file binary and stops the output, as a NUL byte does.
+    withhold_encoding_errors: bool,
     /// Byte offset, relative to where this session started reading, just past
     /// the terminator of the last selected line. Used to rewind standard input
     /// when `-m` stops the search early.
@@ -68,6 +72,7 @@ impl<'a> Searcher<'a> {
             session_last_printed_line: 0,
             session_binary_detected: false,
             session_encoding_error: false,
+            withhold_encoding_errors: locale_is_utf8(),
             session_last_match_end: 0,
         }
     }
@@ -286,11 +291,11 @@ impl<'a> Searcher<'a> {
     }
 
     /// Whether a selected line must be withheld because it is not valid UTF-8.
-    /// GNU grep leaves such lines out but keeps printing the others, and
-    /// reports the binary match once at the end.
+    /// In a UTF-8 locale GNU grep leaves such lines out but keeps printing the
+    /// others, and reports the binary match once at the end.
     fn session_withholds_line(&self, line: &[u8]) -> bool {
-        // TODO: GNU grep respects LANG. Here, I'm always checking for valid UTF-8.
-        self.config.binary_mode == BinaryMode::Binary
+        self.withhold_encoding_errors
+            && self.config.binary_mode == BinaryMode::Binary
             && !self.session_binary_detected
             && std::str::from_utf8(line).is_err()
     }
@@ -458,6 +463,12 @@ impl<'a> Searcher<'a> {
                     line
                 };
 
+                let encoding_error_line =
+                    detect_binary && !binary && std::str::from_utf8(line).is_err();
+                if encoding_error_line && !self.withhold_encoding_errors {
+                    binary = true;
+                }
+
                 if binary {
                     // First match in a binary file: stop and emit the notice
                     // once at the end instead of dumping the line.
@@ -467,7 +478,7 @@ impl<'a> Searcher<'a> {
 
                 // An invalid-UTF-8 matching line is withheld, but the search
                 // goes on and the notice is emitted once at the end.
-                if detect_binary && std::str::from_utf8(line).is_err() {
+                if encoding_error_line {
                     encoding_error = true;
                     count += 1;
                     matched = true;
@@ -559,6 +570,13 @@ impl<'a> Searcher<'a> {
             }
 
             if let Some(positions) = self.session_match_line(line) {
+                if !self.withhold_encoding_errors
+                    && self.config.binary_mode != BinaryMode::WithoutMatch
+                    && !self.session_mark_binary_if(|| std::str::from_utf8(line).is_err())
+                {
+                    return Ok(false);
+                }
+
                 let withhold = self.session_withholds_line(line);
                 self.session_encoding_error |= withhold;
 
@@ -825,4 +843,18 @@ fn line_bounds(buf: &[u8], pos: usize) -> (usize, usize) {
     let start = memrchr(b'\n', &buf[..pos]).map_or(0, |i| i + 1);
     let end = memchr(b'\n', &buf[pos..]).map_or(buf.len(), |i| pos + i);
     (start, end)
+}
+
+/// Whether the character encoding of the locale is UTF-8, judged from the first
+/// non-empty one of `LC_ALL`, `LC_CTYPE` and `LANG`. With none set the locale is
+/// "C", which is unibyte.
+fn locale_is_utf8() -> bool {
+    ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .find(|value| !value.is_empty())
+        .is_some_and(|value| {
+            let value = value.to_string_lossy().to_ascii_lowercase();
+            value.contains("utf-8") || value.contains("utf8")
+        })
 }

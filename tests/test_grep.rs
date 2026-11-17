@@ -1493,9 +1493,9 @@ fn binary_detection_via_invalid_utf8() {
 
 #[test]
 fn invalid_utf8_line_withheld_but_later_matches_printed() {
-    // Only the invalid line is left out; the other matches are still printed
-    // and the notice comes once, at the end. Covers the literal fast path and
-    // the line-at-a-time path.
+    // In a UTF-8 locale only the invalid line is left out; the other matches
+    // are still printed and the notice comes once, at the end. Covers the
+    // literal fast path and the line-at-a-time path.
     let (scene, _) = ucmd();
     scene
         .fixtures
@@ -1503,6 +1503,7 @@ fn invalid_utf8_line_withheld_but_later_matches_printed() {
     for pattern in ["foo", "fo."] {
         scene
             .cmd(env!("CARGO_BIN_EXE_grep"))
+            .env("LC_ALL", "C.UTF-8")
             .args(&["-n", pattern, "u"])
             .succeeds()
             .stdout_is("1:foo 1\n3:foo 3\n")
@@ -1511,9 +1512,27 @@ fn invalid_utf8_line_withheld_but_later_matches_printed() {
         // The withheld line still counts towards -m.
         scene
             .cmd(env!("CARGO_BIN_EXE_grep"))
+            .env("LC_ALL", "C.UTF-8")
             .args(&["-m2", pattern, "u"])
             .succeeds()
             .stdout_is("foo 1\n")
+            .stderr_is("grep: u: binary file matches\n");
+    }
+}
+
+#[test]
+fn invalid_utf8_line_stops_output_in_unibyte_locale() {
+    // In the C locale an encoding error makes the file binary: output stops at
+    // that line and the notice follows. Covers both search paths.
+    let (scene, _) = ucmd();
+    scene.fixtures.write_bytes("u", b"a\n\x80\nb\n");
+    for pattern in ["", "^"] {
+        scene
+            .cmd(env!("CARGO_BIN_EXE_grep"))
+            .env("LC_ALL", "C")
+            .args(&[pattern, "u"])
+            .succeeds()
+            .stdout_is("a\n")
             .stderr_is("grep: u: binary file matches\n");
     }
 }
