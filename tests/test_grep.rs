@@ -2215,3 +2215,39 @@ fn only_matching_with_context() {
         .succeeds()
         .stdout_only("4:xx\n");
 }
+
+#[test]
+fn interval_count_limit() {
+    // GNU grep accepts interval counts up to 32767, in either bound.
+    for args in [
+        &["-E", "k{40000}"][..],
+        &["k\\{40000\\}"][..],
+        &["-E", "k{1,40000}"][..],
+        &["-E", "k{,32768}"][..],
+        &["-E", "k{99999999999999999999999}"][..],
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .pipe_in("kk\n")
+            .ignore_stdin_write_error()
+            .fails_with_code(2)
+            .no_stdout()
+            .stderr_contains("Regular expression too big");
+    }
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", "-c", "k{0,32767}"])
+        .pipe_in("kk\n")
+        .succeeds()
+        .stdout_only("1\n");
+
+    // Braces that do not form an interval are not counted.
+    for args in [
+        &["-E", "[{]40000}"][..],
+        &["k{40000}"][..],
+        &["-E", "k{40000"][..],
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(args).pipe_in("kk\n").fails_with_code(1).no_output();
+    }
+}

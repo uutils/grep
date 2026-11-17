@@ -288,6 +288,15 @@ impl CompiledPattern {
             ));
         }
 
+        if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended)
+            && has_interval_over_limit(pattern.as_bytes(), config.regex_mode == RegexMode::Extended)
+        {
+            return Err(USimpleError::new(
+                2,
+                "Regular expression too big".to_string(),
+            ));
+        }
+
         let mut normalized_pattern = None;
         let pattern = if config.regex_mode == RegexMode::Extended {
             if let Some((op, rest)) = strip_leading_repeat_operator(pattern) {
@@ -556,6 +565,61 @@ fn has_confusing_bracket(pattern: &[u8]) -> bool {
         }
     }
     false
+}
+
+/// The largest interval count GNU grep accepts, in either bound.
+const MAX_INTERVAL_COUNT: u64 = 32767;
+
+/// Whether `pattern` has an interval (`{m,n}` in extended mode, `\{m,n\}` in
+/// basic mode) with a count above [`MAX_INTERVAL_COUNT`]. Oniguruma's own
+/// limit is higher, so GNU's has to be checked here.
+fn has_interval_over_limit(pattern: &[u8], extended: bool) -> bool {
+    let mut i = 0;
+    while i < pattern.len() {
+        match pattern[i] {
+            b'\\' if !extended && pattern.get(i + 1) == Some(&b'{') => {
+                if interval_over_limit(pattern, i + 2, b"\\}") {
+                    return true;
+                }
+                i += 2;
+            }
+            b'\\' => i += 2,
+            b'[' => i = scan_bracket(pattern, i + 1).1,
+            b'{' if extended => {
+                if interval_over_limit(pattern, i + 1, b"}") {
+                    return true;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
+/// Whether the interval body at `start`, `m`, `m,`, `,n` or `m,n` followed
+/// by `close`, has a count above [`MAX_INTERVAL_COUNT`].
+fn interval_over_limit(pattern: &[u8], start: usize, close: &[u8]) -> bool {
+    let mut too_big = false;
+    let mut i = start;
+    let mut has_comma = false;
+    loop {
+        let digits = pattern[i..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        let count = pattern[i..i + digits].iter().try_fold(0u64, |n, &b| {
+            n.checked_mul(10)?.checked_add(u64::from(b - b'0'))
+        });
+        too_big |= count.is_none_or(|n| n > MAX_INTERVAL_COUNT) && digits > 0;
+        i += digits;
+        if !has_comma && pattern.get(i) == Some(&b',') {
+            has_comma = true;
+            i += 1;
+            continue;
+        }
+        return too_big && pattern[i..].starts_with(close);
+    }
 }
 
 /// Scan the body of a bracket expression starting at `start` (just past the
