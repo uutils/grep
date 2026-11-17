@@ -2215,3 +2215,21 @@ fn only_matching_with_context() {
         .succeeds()
         .stdout_only("4:xx\n");
 }
+
+#[test]
+fn exclude_dir_matches_operand_as_written() {
+    let (scene, _) = ucmd();
+    scene.fixtures.mkdir_all("box/inner");
+    scene.fixtures.write("box/inner/f.txt", "hay\n");
+    for pattern in ["./box", "./b*", "box"] {
+        let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+        c.args(&["-r", &format!("--exclude-dir={pattern}"), "hay", "./box"])
+            .fails_with_code(1)
+            .no_output();
+    }
+    // A pattern with a slash is not compared with names inside the tree.
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-r", "--exclude-dir=./inner", "hay", "./box"])
+        .succeeds()
+        .stdout_only("./box/inner/f.txt:hay\n");
+}
