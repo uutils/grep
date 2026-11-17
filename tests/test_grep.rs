@@ -2231,3 +2231,48 @@ fn only_matching_with_context() {
         .succeeds()
         .stdout_only("4:xx\n");
 }
+
+#[test]
+fn null_data_anchors_cover_bre_ere_and_record_end() {
+    // BRE: `$` before alternation is a record anchor.
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", r"alpha$\|x"])
+        .pipe_in("alpha\nbeta\0")
+        .fails_with_code(1)
+        .stdout_only("0\n");
+
+    // BRE: `$` inside a group is a record anchor.
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", r"\(alpha$\)"])
+        .pipe_in("alpha\nbeta\0")
+        .fails_with_code(1)
+        .stdout_only("0\n");
+
+    // ERE: `^` must not match after an internal newline.
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", "-E", "^beta"])
+        .pipe_in("alpha\nbeta\0")
+        .fails_with_code(1)
+        .stdout_only("0\n");
+
+    // BRE: `$` must still match the actual record end.
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", "beta$"])
+        .pipe_in("alpha\nbeta\0")
+        .succeeds()
+        .stdout_only("1\n");
+
+    // ERE: `$` must still match the actual record end.
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", "-E", "beta$"])
+        .pipe_in("alpha\nbeta\0")
+        .succeeds()
+        .stdout_only("1\n");
+
+    // Perl: `$` must still match the actual record end.
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", "-P", "beta$"])
+        .pipe_in("alpha\nbeta\0")
+        .succeeds()
+        .stdout_only("1\n");
+}
