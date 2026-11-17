@@ -360,7 +360,9 @@ impl<'a> Searcher<'a> {
                 // Each line counts once: resume past this line's terminator.
                 p = line_end + 1;
                 self.session_last_match_end = chunk_off + p as u64;
-                if stop_at_first {
+                // Stop as soon as the limit is reached: reading on would block
+                // on input that stays open, such as a pipe from `tail -f`.
+                if stop_at_first || max.is_some_and(|mx| count >= mx) {
                     break 'outer;
                 }
             }
@@ -408,6 +410,9 @@ impl<'a> Searcher<'a> {
         let mut binary = false;
         // Number of terminators in all previously consumed chunks (for `-n`).
         let mut base_lines: u64 = 0;
+
+        // Set once `-m` is satisfied, so no further input is read.
+        let mut reached_max = false;
 
         'outer: while let Some((chunk, chunk_off)) = lb.read_chunk(reader)? {
             let mut p = 0;
@@ -474,6 +479,10 @@ impl<'a> Searcher<'a> {
                 matched = true;
                 p = line_end + 1;
                 self.session_last_match_end = chunk_off + p as u64;
+                if max.is_some_and(|mx| count >= mx) {
+                    reached_max = true;
+                    break;
+                }
             }
 
             // Carry NUL detection and the line tally across the chunk boundary.
@@ -482,6 +491,9 @@ impl<'a> Searcher<'a> {
             }
             if want_lineno {
                 base_lines += nl_before + count_terminators(&chunk[nl_cursor..]);
+            }
+            if reached_max {
+                break;
             }
         }
 

@@ -259,6 +259,59 @@ fn max_count_rewinds_seekable_stdin() {
 }
 
 #[test]
+fn max_count_literal_stops_reading_open_pipe() {
+    // Once -m is satisfied grep must exit without waiting for more input, even
+    // though standard input is still open (as with `tail -f log | grep -m1 x`).
+    use std::io::{Read as _, Write as _};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    for (args, expected) in [
+        (&["-m1", "word"][..], "word\n"),
+        (&["-c", "-m1", "word"][..], "1\n"),
+        (&["-m2", "word"][..], "word\nword\n"),
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_grep"))
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"word\nother\nword\nother\n").unwrap();
+        stdin.flush().unwrap();
+
+        // Keep stdin open and give grep a few seconds to exit on its own.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        // Let a grep that is still reading finish so the test cannot hang.
+        drop(stdin);
+        let status = status.unwrap_or_else(|| {
+            let _ = child.wait();
+            panic!("grep {args:?} kept reading after the -m limit");
+        });
+        assert!(status.success());
+
+        let mut out = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut out)
+            .unwrap();
+        assert_eq!(out, expected, "grep {args:?}");
+    }
+}
+
+#[test]
 fn quiet_match_overrides_file_error() {
     // With -q, a match makes grep exit 0 even if an earlier file could not be
     // opened. Without -q the missing file still yields exit 2, and -q with no
