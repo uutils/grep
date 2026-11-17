@@ -17,6 +17,7 @@ use std::mem::ManuallyDrop;
 use std::ops::ControlFlow;
 use std::path::Path;
 use uucore::error::{ExitCode, FromIo, UResult};
+use uucore::i18n::{UEncoding, get_ctype_encoding};
 use walkdir::WalkDir;
 
 pub struct Searcher<'a> {
@@ -72,7 +73,7 @@ impl<'a> Searcher<'a> {
             session_last_printed_line: 0,
             session_binary_detected: false,
             session_encoding_error: false,
-            withhold_encoding_errors: locale_is_utf8(),
+            withhold_encoding_errors: get_ctype_encoding() == UEncoding::Utf8,
             session_last_match_end: 0,
         }
     }
@@ -843,18 +844,4 @@ fn line_bounds(buf: &[u8], pos: usize) -> (usize, usize) {
     let start = memrchr(b'\n', &buf[..pos]).map_or(0, |i| i + 1);
     let end = memchr(b'\n', &buf[pos..]).map_or(buf.len(), |i| pos + i);
     (start, end)
-}
-
-/// Whether the character encoding of the locale is UTF-8, judged from the first
-/// non-empty one of `LC_ALL`, `LC_CTYPE` and `LANG`. With none set the locale is
-/// "C", which is unibyte.
-fn locale_is_utf8() -> bool {
-    ["LC_ALL", "LC_CTYPE", "LANG"]
-        .iter()
-        .filter_map(std::env::var_os)
-        .find(|value| !value.is_empty())
-        .is_some_and(|value| {
-            let value = value.to_string_lossy().to_ascii_lowercase();
-            value.contains("utf-8") || value.contains("utf8")
-        })
 }
