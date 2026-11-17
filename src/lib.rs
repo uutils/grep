@@ -16,6 +16,7 @@ use crate::line_buffer::LineBuffer;
 use crate::matcher::Matcher;
 use crate::output::OutputWriter;
 use crate::searcher::Searcher;
+use clap::builder::PossibleValue;
 use clap::{Arg, ArgAction, Command};
 use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal as _, Read};
@@ -320,9 +321,12 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         Some("skip") => DeviceMode::Skip,
         _ => DeviceMode::Default,
     };
-    let color = match color {
-        "always" => ColorMode::Always,
-        "auto" => ColorMode::Auto,
+    let color = color_when_values()
+        .into_iter()
+        .find(|when| when.matches(color, true));
+    let color = match color.as_ref().map(PossibleValue::get_name) {
+        Some("always") => ColorMode::Always,
+        Some("auto") => ColorMode::Auto,
         // Color output requires an explicit --color option.
         _ => ColorMode::Never,
     };
@@ -843,7 +847,8 @@ pub fn uu_app() -> Command {
                 .alias("colour")
                 .value_name("WHEN")
                 .help("use markers to highlight the matching strings; WHEN is 'always', 'never', or 'auto'")
-                .value_parser(["always", "never", "auto"])
+                .value_parser(color_when_values())
+                .ignore_case(true)
                 .default_missing_value("auto")
                 .num_args(0..=1)
                 .require_equals(true),
@@ -1002,6 +1007,15 @@ impl GlobSet {
             None => self.patterns.first().is_some_and(|(include, _)| *include),
         }
     }
+}
+
+/// The `--color` arguments. Like GNU grep, accept the synonyms in any case.
+fn color_when_values() -> [PossibleValue; 3] {
+    [
+        PossibleValue::new("always").aliases(["yes", "force"]),
+        PossibleValue::new("never").aliases(["no", "none"]),
+        PossibleValue::new("auto").aliases(["tty", "if-tty"]),
+    ]
 }
 
 fn is_color_value(value: &str) -> bool {
