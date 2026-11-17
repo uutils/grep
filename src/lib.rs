@@ -458,6 +458,13 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         return Err(ExitCode::new(1));
     }
 
+    // An empty pattern list (e.g. `-f /dev/null`) matches no line, so as with `-m 0`
+    // GNU grep exits as "no match" without opening any input. With `-v` every line is
+    // selected, and `-L` lists every file, so both still have to read the inputs.
+    if patterns.is_empty() && !invert_match && !files_without_match {
+        return Err(ExitCode::new(1));
+    }
+
     // An empty pattern matches every line; with `-v`, GNU grep selects no lines
     // and exits as "no match" without reading any input files.
     if invert_match && patterns.iter().any(|pattern| pattern.is_empty()) {

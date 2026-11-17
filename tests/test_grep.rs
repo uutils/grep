@@ -2209,3 +2209,76 @@ fn only_matching_with_context() {
         .succeeds()
         .stdout_only("4:xx\n");
 }
+
+#[test]
+fn empty_pattern_file_does_not_read_inputs() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("none.pat", "");
+    scene.fixtures.write("birds.txt", "crow\n");
+    c.args(&["-c", "-f", "none.pat", "birds.txt", "gone.txt"])
+        .fails_with_code(1)
+        .no_output();
+}
+
+#[test]
+fn empty_pattern_file_skips_missing_files_with_each_syntax() {
+    for syntax in ["-G", "-E", "-F"] {
+        let (scene, mut c) = ucmd();
+        scene.fixtures.write("none.pat", "");
+        c.args(&[syntax, "-f", "none.pat", "no-such-file"])
+            .fails_with_code(1)
+            .no_output();
+    }
+}
+
+#[test]
+fn empty_pattern_file_does_not_read_stdin() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("none.pat", "");
+    c.args(&["-c", "-f", "none.pat"])
+        .pipe_in("crow\n")
+        .fails_with_code(1)
+        .no_output();
+}
+
+#[test]
+fn empty_pattern_file_with_invert_still_selects_every_line() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("none.pat", "");
+    scene.fixtures.write("birds.txt", "crow\nwren\n");
+    c.args(&["-v", "-f", "none.pat", "birds.txt"])
+        .succeeds()
+        .stdout_is("crow\nwren\n");
+}
+
+#[test]
+fn empty_pattern_file_with_files_without_match_lists_every_file() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("none.pat", "");
+    scene.fixtures.write("a.txt", "crow\n");
+    scene.fixtures.write("b.txt", "wren\n");
+    // Exit status follows match semantics, like `-L missing` above.
+    c.args(&["-L", "-f", "none.pat", "a.txt", "b.txt"])
+        .fails_with_code(1)
+        .stdout_is("a.txt\nb.txt\n");
+}
+
+#[test]
+fn pattern_file_with_one_empty_line_still_matches_every_line() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("empty-line.pat", "\n");
+    scene.fixtures.write("birds.txt", "crow\nwren\n");
+    c.args(&["-c", "-f", "empty-line.pat", "birds.txt"])
+        .succeeds()
+        .stdout_is("2\n");
+}
+
+#[test]
+fn empty_pattern_file_with_another_pattern_still_searches() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("none.pat", "");
+    scene.fixtures.write("birds.txt", "crow\nwren\n");
+    c.args(&["-f", "none.pat", "-e", "wren", "birds.txt"])
+        .succeeds()
+        .stdout_is("wren\n");
+}
