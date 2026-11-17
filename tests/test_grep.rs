@@ -1521,6 +1521,30 @@ fn invalid_utf8_line_withheld_but_later_matches_printed() {
 }
 
 #[test]
+fn invalid_utf8_line_withheld_with_context() {
+    // A withheld line still takes its before-context, but is not printed and
+    // starts no after-context of its own.
+    let (scene, _) = ucmd();
+    scene
+        .fixtures
+        .write_bytes("u", b"x1\na\nx \xff\nb\nc\nx2\nd\n");
+    for (args, expected) in [
+        (&["-A1"][..], "x1\na\n--\nx2\nd\n"),
+        (&["-B1"][..], "x1\na\n--\nc\nx2\n"),
+        (&["-n", "-C1"][..], "1:x1\n2-a\n--\n5-c\n6:x2\n7-d\n"),
+    ] {
+        scene
+            .cmd(env!("CARGO_BIN_EXE_grep"))
+            .env("LC_ALL", "C.UTF-8")
+            .args(args)
+            .args(&["x", "u"])
+            .succeeds()
+            .stdout_is(expected)
+            .stderr_is("grep: u: binary file matches\n");
+    }
+}
+
+#[test]
 fn invalid_utf8_line_stops_output_in_unibyte_locale() {
     // In the C locale an encoding error makes the file binary: output stops at
     // that line and the notice follows. Covers both search paths.
