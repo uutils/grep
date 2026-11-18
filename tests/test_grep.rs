@@ -1749,6 +1749,44 @@ fn dereference_recursive_follows_symlinks() {
         .no_output();
 }
 
+#[cfg(all(unix, not(target_os = "cygwin")))]
+#[test]
+fn dereference_recursive_reports_dangling_link_and_loop() {
+    use std::os::unix::fs::symlink;
+
+    let (scene, _) = ucmd();
+    scene.fixtures.mkdir_all("tree/sub");
+    scene.fixtures.write("tree/sub/hit.txt", "match here\n");
+
+    // Dangling symlink: target does not exist
+    symlink(
+        scene.fixtures.plus("tree/nonexistent"),
+        scene.fixtures.plus("tree/dangling"),
+    )
+    .unwrap();
+
+    // Directory cycle
+    symlink(
+        scene.fixtures.plus("tree"),
+        scene.fixtures.plus("tree/sub/loop"),
+    )
+    .unwrap();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-R", "match", "tree"])
+        .fails_with_code(2)
+        .stdout_contains("tree/sub/hit.txt:match here")
+        .stderr_contains("grep: tree/dangling: No such file or directory")
+        .stderr_contains("grep: tree/sub/loop: warning: recursive directory loop");
+
+    // With -s / --no-messages, warnings/errors are suppressed
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-R", "-s", "match", "tree"])
+        .fails_with_code(2)
+        .stdout_contains("tree/sub/hit.txt:match here")
+        .no_stderr();
+}
+
 #[test]
 fn directories_skip_silently() {
     let (scene, mut c) = ucmd();

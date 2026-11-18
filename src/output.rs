@@ -212,6 +212,17 @@ impl<'a> OutputWriter<'a> {
         }
     }
 
+    /// Write a recursive directory loop warning to stderr.
+    pub fn report_recursive_loop(&self, path: &Path) {
+        if !self.config.no_messages {
+            let _ = writeln!(
+                io::stderr(),
+                "grep: {}: warning: recursive directory loop",
+                path.display()
+            );
+        }
+    }
+
     /// Write the "binary file matches" message to stderr.
     pub fn report_binary_match(&self, path: &Path) {
         let _ = writeln!(
