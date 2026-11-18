@@ -697,12 +697,72 @@ fn pattern_sources() {
 
 #[test]
 fn empty_pattern_file_matches_nothing() {
+    // An empty pattern list matches no line, so grep exits without reading its
+    // inputs; the harness's write to stdin races grep's exit and may fail with EPIPE.
     let (scene, mut c) = ucmd();
     scene.fixtures.write("empty", "");
     c.args(&["-f", "empty"])
+        .ignore_stdin_write_error()
         .pipe_in("anything\n")
         .fails_with_code(1)
         .no_stdout();
+
+    // No input is opened: a missing file is not reported and `-c` prints nothing.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("empty", "");
+    scene.fixtures.write("birds.txt", "crow\n");
+    c.args(&["-c", "-f", "empty", "birds.txt", "gone.txt"])
+        .fails_with_code(1)
+        .no_output();
+
+    for syntax in ["-G", "-E", "-F"] {
+        let (scene, mut c) = ucmd();
+        scene.fixtures.write("empty", "");
+        c.args(&[syntax, "-f", "empty", "no-such-file"])
+            .fails_with_code(1)
+            .no_output();
+    }
+
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("empty", "");
+    c.args(&["-c", "-f", "empty"])
+        .ignore_stdin_write_error()
+        .pipe_in("crow\n")
+        .fails_with_code(1)
+        .no_output();
+
+    // `-v` selects every line and `-L` lists every file, so both still read.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("empty", "");
+    scene.fixtures.write("birds.txt", "crow\nwren\n");
+    c.args(&["-v", "-f", "empty", "birds.txt"])
+        .succeeds()
+        .stdout_is("crow\nwren\n");
+
+    // Exit status follows match semantics, like `-L missing`.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("empty", "");
+    scene.fixtures.write("a.txt", "crow\n");
+    scene.fixtures.write("b.txt", "wren\n");
+    c.args(&["-L", "-f", "empty", "a.txt", "b.txt"])
+        .fails_with_code(1)
+        .stdout_is("a.txt\nb.txt\n");
+
+    // A file with one empty line is not an empty list: it matches every line.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("empty-line", "\n");
+    scene.fixtures.write("birds.txt", "crow\nwren\n");
+    c.args(&["-c", "-f", "empty-line", "birds.txt"])
+        .succeeds()
+        .stdout_is("2\n");
+
+    // Another pattern source still searches.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("empty", "");
+    scene.fixtures.write("birds.txt", "crow\nwren\n");
+    c.args(&["-f", "empty", "-e", "wren", "birds.txt"])
+        .succeeds()
+        .stdout_is("wren\n");
 }
 
 #[test]
@@ -2208,77 +2268,4 @@ fn only_matching_with_context() {
         .pipe_in("aa\nbb\ncc\nxx\n")
         .succeeds()
         .stdout_only("4:xx\n");
-}
-
-#[test]
-fn empty_pattern_file_does_not_read_inputs() {
-    let (scene, mut c) = ucmd();
-    scene.fixtures.write("none.pat", "");
-    scene.fixtures.write("birds.txt", "crow\n");
-    c.args(&["-c", "-f", "none.pat", "birds.txt", "gone.txt"])
-        .fails_with_code(1)
-        .no_output();
-}
-
-#[test]
-fn empty_pattern_file_skips_missing_files_with_each_syntax() {
-    for syntax in ["-G", "-E", "-F"] {
-        let (scene, mut c) = ucmd();
-        scene.fixtures.write("none.pat", "");
-        c.args(&[syntax, "-f", "none.pat", "no-such-file"])
-            .fails_with_code(1)
-            .no_output();
-    }
-}
-
-#[test]
-fn empty_pattern_file_does_not_read_stdin() {
-    let (scene, mut c) = ucmd();
-    scene.fixtures.write("none.pat", "");
-    c.args(&["-c", "-f", "none.pat"])
-        .pipe_in("crow\n")
-        .fails_with_code(1)
-        .no_output();
-}
-
-#[test]
-fn empty_pattern_file_with_invert_still_selects_every_line() {
-    let (scene, mut c) = ucmd();
-    scene.fixtures.write("none.pat", "");
-    scene.fixtures.write("birds.txt", "crow\nwren\n");
-    c.args(&["-v", "-f", "none.pat", "birds.txt"])
-        .succeeds()
-        .stdout_is("crow\nwren\n");
-}
-
-#[test]
-fn empty_pattern_file_with_files_without_match_lists_every_file() {
-    let (scene, mut c) = ucmd();
-    scene.fixtures.write("none.pat", "");
-    scene.fixtures.write("a.txt", "crow\n");
-    scene.fixtures.write("b.txt", "wren\n");
-    // Exit status follows match semantics, like `-L missing` above.
-    c.args(&["-L", "-f", "none.pat", "a.txt", "b.txt"])
-        .fails_with_code(1)
-        .stdout_is("a.txt\nb.txt\n");
-}
-
-#[test]
-fn pattern_file_with_one_empty_line_still_matches_every_line() {
-    let (scene, mut c) = ucmd();
-    scene.fixtures.write("empty-line.pat", "\n");
-    scene.fixtures.write("birds.txt", "crow\nwren\n");
-    c.args(&["-c", "-f", "empty-line.pat", "birds.txt"])
-        .succeeds()
-        .stdout_is("2\n");
-}
-
-#[test]
-fn empty_pattern_file_with_another_pattern_still_searches() {
-    let (scene, mut c) = ucmd();
-    scene.fixtures.write("none.pat", "");
-    scene.fixtures.write("birds.txt", "crow\nwren\n");
-    c.args(&["-f", "none.pat", "-e", "wren", "birds.txt"])
-        .succeeds()
-        .stdout_is("wren\n");
 }
