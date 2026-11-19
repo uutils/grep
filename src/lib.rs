@@ -138,10 +138,10 @@ fn read_error(label: impl std::fmt::Display, err: &std::io::Error) -> Box<dyn UE
 }
 
 /// Read a file named by `-f` or `--exclude-from`, where `-` means standard
-/// input. The label for an error message is returned together with the result,
-/// so both operands go through one `-` check.
-fn read_pattern_file(path: &str) -> (&str, std::io::Result<String>) {
-    if path == "-" {
+/// input. An unreadable file is mapped to the usage error here so both callers
+/// can simply use `?`.
+fn read_pattern_file(path: &str) -> UResult<String> {
+    let (label, contents) = if path == "-" {
         let mut buf = String::new();
         (
             "(standard input)",
@@ -149,7 +149,8 @@ fn read_pattern_file(path: &str) -> (&str, std::io::Result<String>) {
         )
     } else {
         (path, std::fs::read_to_string(path))
-    }
+    };
+    contents.map_err(|err| read_error(label, &err))
 }
 
 #[uucore::main(no_signals)]
@@ -256,8 +257,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         }
 
         for path in file_pattern {
-            let (label, contents) = read_pattern_file(path);
-            pattern_strings.push(contents.map_err(|err| read_error(label, &err))?);
+            pattern_strings.push(read_pattern_file(path)?);
         }
         for contents in &pattern_strings {
             if !contents.is_empty() {
@@ -360,8 +360,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         matches.indices_of("exclude_from"),
     ) {
         for (i, path) in indices.zip(paths) {
-            let (label, contents) = read_pattern_file(path);
-            let contents = contents.map_err(|err| read_error(label, &err))?;
+            let contents = read_pattern_file(path)?;
             for line in contents.lines() {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
