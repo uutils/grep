@@ -1387,6 +1387,8 @@ fn grep_color_warning_only_when_used() {
             .arg("--color=always")
             .args(&args)
             .pipe_in("foo\n")
+            // With -m0, grep exits before reading stdin.
+            .ignore_stdin_write_error()
             .fails_with_code(1)
             .no_output();
     }
