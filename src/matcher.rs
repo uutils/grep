@@ -551,11 +551,26 @@ fn has_empty_interval(pattern: &[u8]) -> bool {
     while i < pattern.len() {
         match pattern[i] {
             b'{' if after_atom && pattern.get(i + 1) == Some(&b'}') => return true,
-            b'\\' => i += 1,
-            b'[' => i = scan_bracket(pattern, i + 1).1 - 1,
-            _ => {}
+            b'\\' => {
+                i += 1;
+                if i < pattern.len() {
+                    after_atom = true;
+                    i += 1;
+                }
+                continue;
+            }
+            b'[' => {
+                i = scan_bracket(pattern, i + 1).1;
+                after_atom = true;
+                continue;
+            }
+            b'(' | b'|' | b'^' => {
+                after_atom = false;
+            }
+            _ => {
+                after_atom = true;
+            }
         }
-        after_atom = !matches!(pattern[i], b'(' | b'|' | b'^');
         i += 1;
     }
     false

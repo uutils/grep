@@ -2218,7 +2218,7 @@ fn only_matching_with_context() {
 
 #[test]
 fn ere_empty_interval_is_error() {
-    for pattern in ["zq{}", "(zq){}", "[z]{}", "z*{}"] {
+    for pattern in ["zq{}", "(zq){}", "[z]{}", "z*{}", r"\({}", r"a\.{}"] {
         let (_s, mut c) = ucmd();
         c.args(&["-E", pattern])
             .pipe_in("zq{}\n")
@@ -2236,4 +2236,12 @@ fn ere_empty_interval_is_error() {
             .succeeds()
             .stdout_only("1\n");
     }
+
+    // A trailing backslash does not panic during interval inspection.
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", "a\\"])
+        .pipe_in("test\n")
+        .ignore_stdin_write_error()
+        .fails_with_code(2)
+        .no_stdout();
 }
