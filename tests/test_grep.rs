@@ -2219,13 +2219,13 @@ fn only_matching_with_context() {
 #[test]
 fn only_matching_empty_match_does_not_split_utf8() {
     let (_s, mut c) = ucmd();
-    c.args(&["-ob", r"\w*"])
+    c.args(&["-ob", r"-e\w*"])
         .pipe_in("run \u{1F635}rm now\n")
         .succeeds()
         .stdout_only("0:run\n8:rm\n11:now\n");
 
     let (_s, mut c) = ucmd();
-    c.args(&["-o", "[^、]*"])
+    c.args(&["-o", "-e[^、]*"])
         .pipe_in("a、b\n")
         .succeeds()
         .stdout_only("a\nb\n");
