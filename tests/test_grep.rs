@@ -2215,3 +2215,22 @@ fn only_matching_with_context() {
         .succeeds()
         .stdout_only("4:xx\n");
 }
+
+#[test]
+fn unknown_option_diagnostic() {
+    let (_s, mut c) = ucmd();
+    c.args(&["--no-such-flag-here", "q"])
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_is(
+            "grep: unrecognized option '--no-such-flag-here'\nUsage: grep [OPTION]... PATTERNS [FILE]...\nTry 'grep --help' for more information.\n",
+        );
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-j", "q"])
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_is(
+            "grep: invalid option -- 'j'\nUsage: grep [OPTION]... PATTERNS [FILE]...\nTry 'grep --help' for more information.\n",
+        );
+}
