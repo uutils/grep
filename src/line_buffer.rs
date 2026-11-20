@@ -22,6 +22,8 @@ pub struct LineBuffer {
     next_line_start: u64,
     /// Set once a file read has returned EOF.
     eof: bool,
+    /// Set when the buffered input contains a NUL byte.
+    has_nul: bool,
     /// The line terminator is typically NUL or LF.
     line_terminator: u8,
 }
@@ -37,6 +39,7 @@ impl LineBuffer {
 
             next_line_start: 0,
             eof: false,
+            has_nul: false,
             line_terminator,
         }
     }
@@ -48,13 +51,19 @@ impl LineBuffer {
         self.end = 0;
         self.next_line_start = 0;
         self.eof = false;
+        self.has_nul = false;
+    }
+
+    /// Returns true if the buffer currently contains or has encountered a NUL byte.
+    pub fn has_nul(&self) -> bool {
+        self.has_nul
     }
 
     /// Read the next line from the given reader.
     /// Returns `Ok(None)` if the end of the reader is reached.
     /// Otherwise, returns `Ok(Some((line, line_start)))`, where `line` is the line read (without the
     /// `line_terminator`), and `line_start` is the absolute byte offset of the start of the line.
-    pub fn read_line(&mut self, file: &mut File) -> io::Result<Option<(&[u8], u64)>> {
+    pub fn read_line(&mut self, file: &mut File) -> io::Result<Option<(&[u8], u64, bool)>> {
         if self.eof {
             return Ok(None);
         }
@@ -69,7 +78,7 @@ impl LineBuffer {
                 self.beg = end + 1;
                 self.scan = self.beg;
                 self.next_line_start += (self.beg - beg) as u64;
-                return Ok(Some((line, line_start)));
+                return Ok(Some((line, line_start, self.has_nul)));
             }
 
             // `buffer[pos..end]` has no terminator. Remember that for the next scan.
@@ -105,8 +114,14 @@ impl LineBuffer {
                     let line = &self.buffer[self.beg..self.end];
                     let line_start = self.next_line_start;
                     self.eof = true; // shortcut the next call to read_line()
-                    Ok(Some((line, line_start)))
+                    Ok(Some((line, line_start, self.has_nul)))
                 };
+            }
+            if self.line_terminator != 0
+                && !self.has_nul
+                && memchr(0, &self.buffer[self.end..self.end + n]).is_some()
+            {
+                self.has_nul = true;
             }
             self.end += n;
         }
@@ -115,14 +130,14 @@ impl LineBuffer {
     /// Read the next run of *complete* lines as a single slice.
     ///
     /// Returns `Ok(None)` at end of input. Otherwise returns `Ok(Some((chunk,
-    /// chunk_start)))`, where `chunk` spans one or more whole lines (each ending
+    /// chunk_start, has_nul)))`, where `chunk` spans one or more whole lines (each ending
     /// in the terminator) and `chunk_start` is the absolute byte offset of the
     /// first byte of the chunk. The only exception is a final line lacking a
     /// terminator, which is returned on its own as the last chunk.
     ///
     /// This hands back as much buffered data as ends on a line boundary, so a
     /// caller can scan many lines with one pass instead of line by line.
-    pub fn read_chunk(&mut self, file: &mut File) -> io::Result<Option<(&[u8], u64)>> {
+    pub fn read_chunk(&mut self, file: &mut File) -> io::Result<Option<(&[u8], u64, bool)>> {
         loop {
             // Hand back everything up to and including the last terminator.
             if self.end > self.beg
@@ -134,7 +149,7 @@ impl LineBuffer {
                 self.next_line_start += (lim - beg) as u64;
                 self.beg = lim;
                 self.scan = lim;
-                return Ok(Some((&self.buffer[beg..lim], chunk_start)));
+                return Ok(Some((&self.buffer[beg..lim], chunk_start, self.has_nul)));
             }
 
             // No whole line buffered. At EOF, flush any unterminated remainder.
@@ -147,7 +162,11 @@ impl LineBuffer {
                 self.next_line_start += (self.end - beg) as u64;
                 self.beg = self.end;
                 self.scan = self.end;
-                return Ok(Some((&self.buffer[beg..self.end], chunk_start)));
+                return Ok(Some((
+                    &self.buffer[beg..self.end],
+                    chunk_start,
+                    self.has_nul,
+                )));
             }
 
             // Slide the partial tail to the front to maximize room for reading.
@@ -172,6 +191,12 @@ impl LineBuffer {
             if n == 0 {
                 self.eof = true;
             } else {
+                if self.line_terminator != 0
+                    && !self.has_nul
+                    && memchr(0, &self.buffer[self.end..self.end + n]).is_some()
+                {
+                    self.has_nul = true;
+                }
                 self.end += n;
             }
         }
@@ -220,7 +245,7 @@ mod tests {
         let mut lb = LineBuffer::new(term);
         let mut input = temp_input(content);
         let mut out = Vec::new();
-        while let Some((chunk, start)) = lb.read_chunk(&mut input.file).unwrap() {
+        while let Some((chunk, start, _)) = lb.read_chunk(&mut input.file).unwrap() {
             out.push((chunk.to_vec(), start));
         }
         out

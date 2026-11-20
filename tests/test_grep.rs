@@ -2159,9 +2159,20 @@ fn slow_path_binary_handling() {
         .succeeds()
         .stdout_is_bytes(b"hit\0\n");
 
-    // A NUL after the matched line means binariness is discovered at EOF, so
-    // the line is printed first and the notice is emitted during finalization.
-    scene.fixtures.write_bytes("late", b"hit\nno\0\n");
+    // A NUL in the same block as a matched line suppresses the match.
+    scene.fixtures.write_bytes("same_block", b"hit\nno\0\n");
+    scene
+        .cmd(env!("CARGO_BIN_EXE_grep"))
+        .args(&["[h]it", "same_block"])
+        .succeeds()
+        .no_stdout()
+        .stderr_contains("binary file matches");
+
+    // A NUL in a later block allows earlier blocks to print their matches.
+    let mut late = b"hit\n".to_vec();
+    late.resize(150 * 1024, b'y');
+    late.extend(b"\nno\0\n");
+    scene.fixtures.write_bytes("late", &late);
     scene
         .cmd(env!("CARGO_BIN_EXE_grep"))
         .args(&["[h]it", "late"])
@@ -2172,17 +2183,31 @@ fn slow_path_binary_handling() {
 
 #[test]
 fn fast_path_binary_detected_after_a_printed_line() {
-    // A NUL that appears only after the last match in the buffer marks the file
-    // binary on the fast path *after* an earlier match was already printed: the
-    // printed line stays and the trailing notice is still emitted.
+    // A NUL that appears in a subsequent block marks the file binary on the
+    // fast path *after* an earlier match was already printed from a prior block.
     let (scene, _) = ucmd();
-    scene.fixtures.write_bytes("b", b"hit\nno\0\n");
+    let mut b = b"hit\n".to_vec();
+    b.resize(150 * 1024, b'y');
+    b.extend(b"\nno\0\n");
+    scene.fixtures.write_bytes("b", &b);
     scene
         .cmd(env!("CARGO_BIN_EXE_grep"))
         .args(&["hit", "b"])
         .succeeds()
         .stdout_is("hit\n")
         .stderr_contains("binary file matches");
+}
+
+#[test]
+fn nul_later_in_small_file_hides_earlier_matches() {
+    for pattern in ["lime", "l.me", "lime|plum"] {
+        let (_s, mut c) = ucmd();
+        c.args(&["-E", pattern])
+            .pipe_in(&b"plum\nlime\nfig\x00\nlime\n"[..])
+            .succeeds()
+            .no_stdout()
+            .stderr_contains("binary file matches");
+    }
 }
 
 #[test]
