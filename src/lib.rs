@@ -76,6 +76,9 @@ pub struct ColorConfig<'a> {
 
     pub reverse_video: bool,
     pub no_erase: bool,
+
+    /// Whether `GREP_COLOR` still sets a match color after `GREP_COLORS`.
+    pub uses_grep_color: bool,
 }
 
 /// Include and exclude patterns, in command-line order. As in GNU grep, the
@@ -401,12 +404,11 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
                 }
         }
     };
-    // GNU grep treats GREP_COLOR as deprecated: when it is set and color output
-    // is active, warn and point users at the GREP_COLORS 'mt' capability.
-    if use_color && !grep_color.is_empty() {
-        show_warning!("GREP_COLOR='{grep_color}' is deprecated; use GREP_COLORS='mt={grep_color}'");
-    }
     let color_config = ColorConfig::from_env(&grep_color, &grep_colors);
+    // GNU grep treats GREP_COLOR as deprecated: when color output is active and
+    // GREP_COLORS leaves it in charge of a match color, warn and point users at
+    // the GREP_COLORS 'mt' capability.
+    let warn_grep_color = use_color && color_config.uses_grep_color;
 
     let config = Config {
         // Searcher
@@ -462,6 +464,10 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     // and exits as "no match" without reading any input files.
     if invert_match && patterns.iter().any(|pattern| pattern.is_empty()) {
         return Err(ExitCode::new(1));
+    }
+
+    if warn_grep_color {
+        show_warning!("GREP_COLOR='{grep_color}' is deprecated; use GREP_COLORS='mt={grep_color}'");
     }
 
     let writer = OutputWriter::new(&config);
@@ -1021,11 +1027,17 @@ impl<'a> ColorConfig<'a> {
             context_line: "",
             reverse_video: false,
             no_erase: false,
+            uses_grep_color: false,
         };
 
+        // Which match colors still come from GREP_COLOR.
+        let mut selected_from_grep_color = false;
+        let mut context_from_grep_color = false;
         if !grep_color.is_empty() {
             config.matched_selected = grep_color;
             config.matched_context = grep_color;
+            selected_from_grep_color = true;
+            context_from_grep_color = true;
         }
 
         // GNU grep retains prior settings and stops at an empty assignment key
@@ -1040,9 +1052,17 @@ impl<'a> ColorConfig<'a> {
                     "mt" => {
                         config.matched_selected = value;
                         config.matched_context = value;
+                        selected_from_grep_color = false;
+                        context_from_grep_color = false;
                     }
-                    "ms" => config.matched_selected = value,
-                    "mc" => config.matched_context = value,
+                    "ms" => {
+                        config.matched_selected = value;
+                        selected_from_grep_color = false;
+                    }
+                    "mc" => {
+                        config.matched_context = value;
+                        context_from_grep_color = false;
+                    }
                     "fn" => config.filename = value,
                     "ln" => config.line_number = value,
                     "bn" => config.byte_offset = value,
@@ -1062,6 +1082,7 @@ impl<'a> ColorConfig<'a> {
             }
         }
 
+        config.uses_grep_color = selected_from_grep_color || context_from_grep_color;
         config
     }
 }
