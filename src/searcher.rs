@@ -345,7 +345,7 @@ impl<'a> Searcher<'a> {
 
         let mut count: u64 = 0;
         let mut matched = false;
-        'outer: while let Some((chunk, chunk_off)) = lb.read_chunk(reader)? {
+        'outer: while let Some((chunk, chunk_off, _)) = lb.read_chunk(reader)? {
             let mut p = 0;
             while p < chunk.len() {
                 let Some(rel) = leftmost_match(finders, &chunk[p..]) else {
@@ -409,12 +409,16 @@ impl<'a> Searcher<'a> {
         // Number of terminators in all previously consumed chunks (for `-n`).
         let mut base_lines: u64 = 0;
 
-        'outer: while let Some((chunk, chunk_off)) = lb.read_chunk(reader)? {
+        'outer: while let Some((chunk, chunk_off, has_nul)) = lb.read_chunk(reader)? {
             let mut p = 0;
             // NUL scanned up to here; terminators counted up to `nl_cursor`.
             let mut nul_scanned = 0;
             let mut nl_cursor = 0;
             let mut nl_before = 0u64;
+
+            if detect_binary && !binary && has_nul {
+                binary = true;
+            }
 
             while p < chunk.len() {
                 let Some(rel) = leftmost_match(finders, &chunk[p..]) else {
@@ -514,7 +518,7 @@ impl<'a> Searcher<'a> {
 
         let mut line_number: u64 = 0;
 
-        while let Some((line, line_start)) = lb.read_line(reader)? {
+        while let Some((line, line_start, has_nul)) = lb.read_line(reader)? {
             line_number += 1;
             // Offset of the next line. A final line without a terminator makes
             // this one byte past the input, which reads the same as its end.
@@ -529,8 +533,8 @@ impl<'a> Searcher<'a> {
                     line
                 };
 
-            // Any null byte flips us into binary mode.
-            if !self.session_mark_binary_if(|| memchr(0, line).is_some()) {
+            // Any null byte in the current line or input block flips us into binary mode.
+            if !self.session_mark_binary_if(|| has_nul || memchr(0, line).is_some()) {
                 return Ok(false);
             }
 
