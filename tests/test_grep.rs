@@ -2215,3 +2215,23 @@ fn only_matching_with_context() {
         .succeeds()
         .stdout_only("4:xx\n");
 }
+
+#[test]
+fn unknown_option_diagnostic() {
+    let prog = if cfg!(windows) { "grep.exe" } else { "grep" };
+    let (_s, mut c) = ucmd();
+    c.args(&["--no-such-flag-here", "q"])
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_is(format!(
+            "{prog}: unrecognized option '--no-such-flag-here'\nUsage: {prog} [OPTION]... PATTERNS [FILE]...\nTry '{prog} --help' for more information.\n",
+        ));
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-j", "q"])
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_is(format!(
+            "{prog}: invalid option -- 'j'\nUsage: {prog} [OPTION]... PATTERNS [FILE]...\nTry '{prog} --help' for more information.\n",
+        ));
+}
