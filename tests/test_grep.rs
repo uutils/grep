@@ -1775,7 +1775,7 @@ fn dereference_recursive_reports_dangling_link_and_loop() {
     let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
     c.args(&["-R", "match", "tree"])
         .fails_with_code(2)
-        .stdout_contains("tree/sub/hit.txt:match here")
+        .stdout_is("tree/sub/hit.txt:match here\n")
         .stderr_contains("grep: tree/dangling: No such file or directory")
         .stderr_contains("grep: tree/sub/loop: warning: recursive directory loop");
 
@@ -1783,8 +1783,17 @@ fn dereference_recursive_reports_dangling_link_and_loop() {
     let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
     c.args(&["-R", "-s", "match", "tree"])
         .fails_with_code(2)
-        .stdout_contains("tree/sub/hit.txt:match here")
+        .stdout_is("tree/sub/hit.txt:match here\n")
         .no_stderr();
+
+    // When searching implicitly in cwd without a path argument (-R), leading './' is stripped
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.current_dir(scene.fixtures.plus("tree"))
+        .args(&["-R", "match"])
+        .fails_with_code(2)
+        .stdout_is("sub/hit.txt:match here\n")
+        .stderr_contains("grep: dangling: No such file or directory")
+        .stderr_contains("grep: sub/loop: warning: recursive directory loop");
 }
 
 #[test]
