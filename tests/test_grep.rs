@@ -258,6 +258,47 @@ fn max_count_rewinds_seekable_stdin() {
     assert_eq!(rest, "b\nq\nc\n");
 }
 
+#[cfg(unix)]
+#[test]
+fn max_count_literal_stops_reading_open_pipe() {
+    // Once -m is satisfied grep must exit without waiting for more input, even
+    // though standard input is still open (as with `tail -f log | grep -m1 x`).
+    for (args, expected) in [
+        (&["-m1", "word"][..], "word\n"),
+        (&["-c", "-m1", "word"][..], "1\n"),
+        (&["-m2", "word"][..], "word\nword\n"),
+    ] {
+        let (_s, mut c) = ucmd();
+        let mut child = c
+            .args(args)
+            .set_stdin(std::process::Stdio::piped())
+            .run_no_wait();
+        // Write the lines but keep stdin open.
+        child.write_in("word\nother\nword\nother\n");
+        child.delay(500);
+        let still_running = child.is_alive();
+        child.close_stdin(); // let a buggy grep finish so the test cannot hang
+        let result = child.wait().unwrap();
+        assert!(
+            !still_running,
+            "grep {args:?} kept reading after the -m limit"
+        );
+        result.success().stdout_only(expected);
+    }
+}
+
+#[test]
+fn max_count_literal_still_detects_binary_in_read_chunk() {
+    // The chunk holding the N-th match is still scanned for NUL, so a NUL after
+    // it gives the binary notice, the same as without another match before it.
+    let (_s, mut c) = ucmd();
+    c.args(&["-m1", "word"])
+        .pipe_in("word\nword\nfoo\0\n")
+        .succeeds()
+        .stdout_is("word\n")
+        .stderr_contains("binary file matches");
+}
+
 #[test]
 fn quiet_match_overrides_file_error() {
     // With -q, a match makes grep exit 0 even if an earlier file could not be
