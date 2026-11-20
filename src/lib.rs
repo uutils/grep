@@ -48,6 +48,21 @@ enum ColorMode {
     Auto,
 }
 
+/// The `--color` arguments. Like GNU grep, accept the synonyms in any case.
+impl ValueEnum for ColorMode {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Always, Self::Never, Self::Auto]
+    }
+
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        Some(match self {
+            Self::Always => PossibleValue::new("always").aliases(["yes", "force"]),
+            Self::Never => PossibleValue::new("never").aliases(["no", "none"]),
+            Self::Auto => PossibleValue::new("auto").aliases(["tty", "if-tty"]),
+        })
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
 pub enum DirectoryMode {
@@ -999,21 +1014,6 @@ impl GlobSet {
             Some((include, _)) => !include,
             None => self.patterns.first().is_some_and(|(include, _)| *include),
         }
-    }
-}
-
-/// The `--color` arguments. Like GNU grep, accept the synonyms in any case.
-impl ValueEnum for ColorMode {
-    fn value_variants<'a>() -> &'a [Self] {
-        &[Self::Always, Self::Never, Self::Auto]
-    }
-
-    fn to_possible_value(&self) -> Option<PossibleValue> {
-        Some(match self {
-            Self::Always => PossibleValue::new("always").aliases(["yes", "force"]),
-            Self::Never => PossibleValue::new("never").aliases(["no", "none"]),
-            Self::Auto => PossibleValue::new("auto").aliases(["tty", "if-tty"]),
-        })
     }
 }
 
