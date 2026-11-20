@@ -462,6 +462,59 @@ fn perl_regexp_rejects_multiple_patterns() {
 }
 
 #[test]
+fn backtracking_limit_is_an_error_not_a_panic() {
+    // A catastrophic backtracking pattern with -P reports exceeded backtracking limit and exits 2.
+    // See: https://github.com/uutils/grep/issues/191
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", "((m+)*)+$"])
+        .pipe_in(format!("{}n\n", "m".repeat(45)))
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_contains("exceeded PCRE's backtracking limit")
+        .stderr_does_not_contain("panicked");
+
+    // File input reports filename and diagnostic.
+    let (scene, mut c) = ucmd();
+    scene
+        .fixtures
+        .write("bt", &format!("{}n\n", "m".repeat(45)));
+    c.current_dir(scene.fixtures.subdir.as_path())
+        .args(&["-P", "((m+)*)+$", "bt"])
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_contains("bt: exceeded PCRE's backtracking limit")
+        .stderr_does_not_contain("panicked");
+
+    // -q suppresses stdout and still fails with code 2.
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", "-q", "((m+)*)+$"])
+        .pipe_in(format!("{}n\n", "m".repeat(45)))
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_does_not_contain("panicked");
+
+    // -s suppresses the diagnostic on stderr and still fails with code 2.
+    let (scene, mut c) = ucmd();
+    scene
+        .fixtures
+        .write("bt_s", &format!("{}n\n", "m".repeat(45)));
+    c.current_dir(scene.fixtures.subdir.as_path())
+        .args(&["-P", "-s", "((m+)*)+$", "bt_s"])
+        .fails_with_code(2)
+        .no_stdout()
+        .no_stderr();
+
+    // In -E mode, hitting the retry limit also yields an error and exit code 2, not a panic.
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", "((m+)*)+$"])
+        .pipe_in(format!("{}n\n", "m".repeat(45)))
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_contains("exceeded backtracking limit")
+        .stderr_does_not_contain("panicked");
+}
+
+#[test]
 fn posix_character_classes() {
     let (_s, mut c) = ucmd();
     c.args(&["-E", "[[:digit:]]+"])

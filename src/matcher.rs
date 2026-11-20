@@ -7,8 +7,10 @@ use crate::{Config, RegexMode};
 use memchr::memmem;
 use onig::{RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior, SyntaxOperator};
 use onig_sys::{
-    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
+    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, ONIGERR_MATCH_STACK_LIMIT_OVER,
+    ONIGERR_RETRY_LIMIT_IN_MATCH_OVER, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
 };
+use std::io;
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
 use uucore::error::{UResult, USimpleError};
@@ -62,25 +64,27 @@ impl<'a> Matcher<'a> {
     }
 
     /// Decide whether `line` matches and return the positions to highlight.
-    pub fn match_line(&self, line: &[u8]) -> Option<Vec<(usize, usize)>> {
+    pub fn match_line(&self, line: &[u8]) -> io::Result<Option<Vec<(usize, usize)>>> {
         let mut any_seen = false;
         let mut any_selected = false;
-        let positions: Vec<_> = MatchIter::new(&self.patterns, line)
-            .filter(|&(start, end)| {
-                any_seen = true;
-                // Drop matches that don't span the whole line if `-x` was requested.
-                if self.config.line_regexp && !(start == 0 && end == line.len()) {
-                    return false;
-                }
-                // Drop matches that aren't word matches if `-w` was requested.
-                if self.config.word_regexp && !Self::is_word_match(line, start, end) {
-                    return false;
-                }
-                any_selected = true;
-                // Drop zero-length matches from the output.
-                start != end
-            })
-            .collect();
+        let mut positions = Vec::new();
+        let mut iter = MatchIter::new(&self.patterns, line)?;
+        while let Some((start, end)) = iter.next_match()? {
+            any_seen = true;
+            // Drop matches that don't span the whole line if `-x` was requested.
+            if self.config.line_regexp && !(start == 0 && end == line.len()) {
+                continue;
+            }
+            // Drop matches that aren't word matches if `-w` was requested.
+            if self.config.word_regexp && !Self::is_word_match(line, start, end) {
+                continue;
+            }
+            any_selected = true;
+            // Drop zero-length matches from the output.
+            if start != end {
+                positions.push((start, end));
+            }
+        }
 
         let raw_matched = if self.config.line_regexp || self.config.word_regexp {
             // -w / -x are authoritative once matches are filtered. Zero-length
@@ -91,22 +95,29 @@ impl<'a> Matcher<'a> {
         };
 
         if raw_matched != self.config.invert_match {
-            Some(positions)
+            Ok(Some(positions))
         } else {
-            None
+            Ok(None)
         }
     }
 
     /// Cheap match check that doesn't enumerate positions.
-    pub fn is_match(&self, line: &[u8]) -> Option<Vec<(usize, usize)>> {
+    pub fn is_match(&self, line: &[u8]) -> io::Result<Option<Vec<(usize, usize)>>> {
         // `-w` / `-x` need positions to filter, so we fall back to `match_line`.
-        let matched = if self.config.line_regexp || self.config.word_regexp {
-            self.match_line(line).is_some()
+        if self.config.line_regexp || self.config.word_regexp {
+            self.match_line(line)
         } else {
-            let raw_matched = self.patterns.iter().any(|p| p.is_match(line));
-            raw_matched != self.config.invert_match
-        };
-        matched.then(Vec::new)
+            let mut any = false;
+            for p in &self.patterns {
+                if p.is_match(line)? {
+                    any = true;
+                    break;
+                }
+            }
+            let raw_matched = any;
+            let matched = raw_matched != self.config.invert_match;
+            Ok(matched.then(Vec::new))
+        }
     }
 
     /// Word-boundary check `-w`.
@@ -148,35 +159,30 @@ struct MatchIter<'a> {
 }
 
 impl<'a> MatchIter<'a> {
-    fn new(patterns: &'a [CompiledPattern], line: &'a [u8]) -> Self {
-        Self {
-            cursors: patterns
-                .iter()
-                .map(|pattern| {
-                    let mut c = Cursor {
-                        pattern,
-                        line,
-                        offset: 0,
-                        pending: None,
-                    };
-                    c.refill();
-                    c
-                })
-                .collect(),
-            last_end: 0,
+    fn new(patterns: &'a [CompiledPattern], line: &'a [u8]) -> io::Result<Self> {
+        let mut cursors = Vec::with_capacity(patterns.len());
+        for pattern in patterns {
+            let mut c = Cursor {
+                pattern,
+                line,
+                offset: 0,
+                pending: None,
+            };
+            c.refill()?;
+            cursors.push(c);
         }
+        Ok(Self {
+            cursors,
+            last_end: 0,
+        })
     }
-}
 
-impl<'a> Iterator for MatchIter<'a> {
-    type Item = (usize, usize);
-
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next_match(&mut self) -> io::Result<Option<(usize, usize)>> {
         // Discard stale pendings that fall before the last emit.
         for cursor in &mut self.cursors {
             if matches!(cursor.pending, Some((s, _)) if s < self.last_end) {
                 cursor.offset = self.last_end;
-                cursor.refill();
+                cursor.refill()?;
             }
         }
 
@@ -189,12 +195,16 @@ impl<'a> Iterator for MatchIter<'a> {
             .enumerate()
             .filter_map(|(i, c)| c.pending.map(|p| (i, p)))
             .min_by_key(|&(_, (s, e))| (s, std::cmp::Reverse(e)))
-            .map(|(i, _)| i)?;
+            .map(|(i, _)| i);
+
+        let Some(best_idx) = best_idx else {
+            return Ok(None);
+        };
 
         let (start, end) = self.cursors[best_idx].pending.unwrap();
-        self.cursors[best_idx].refill();
+        self.cursors[best_idx].refill()?;
         self.last_end = end;
-        Some((start, end))
+        Ok(Some((start, end)))
     }
 }
 
@@ -209,24 +219,25 @@ struct Cursor<'a> {
 }
 
 impl Cursor<'_> {
-    fn refill(&mut self) {
+    fn refill(&mut self) -> io::Result<()> {
         if self.offset > self.line.len() {
             self.pending = None;
-            return;
+            return Ok(());
         }
-        let Some((start, leftmost_end)) = self.pattern.search_leftmost(self.line, self.offset)
+        let Some((start, leftmost_end)) = self.pattern.search_leftmost(self.line, self.offset)?
         else {
             self.pending = None;
-            return;
+            return Ok(());
         };
         let end = self
             .pattern
-            .longest_end_at(self.line, start)
+            .longest_end_at(self.line, start)?
             .unwrap_or(leftmost_end);
         // Advance the next search past the match we just found.
         // Zero-length matches need a +1 nudge to avoid spinning forever.
         self.offset = end.max(start + 1);
         self.pending = Some((start, end));
+        Ok(())
     }
 }
 
@@ -256,6 +267,7 @@ struct CompiledPattern {
     /// entire haystack to find the longest. This makes it unsuitable for searching,
     /// but it's perfect for a second, anchored match pass for POSIX semantics.
     longest_anchored: OnigRegex,
+    is_pcre: bool,
 }
 
 impl CompiledPattern {
@@ -345,31 +357,39 @@ impl CompiledPattern {
             &syntax,
             options | RegexOptions::REGEX_OPTION_FIND_LONGEST,
         )?;
+        let is_pcre = config.regex_mode == RegexMode::Perl;
         Ok(Self {
             leftmost,
             longest_anchored,
+            is_pcre,
         })
     }
 
     /// Find the leftmost match starting at or after `offset`.
-    fn search_leftmost(&self, line: &[u8], offset: usize) -> Option<(usize, usize)> {
+    fn search_leftmost(&self, line: &[u8], offset: usize) -> io::Result<Option<(usize, usize)>> {
         let mut region = Region::new();
-        self.leftmost.search(line, offset, Some(&mut region))?;
-        region.pos(0)
+        let res = self
+            .leftmost
+            .search(line, offset, Some(&mut region), self.is_pcre)?;
+        if res.is_some() {
+            Ok(region.pos(0))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Given a known leftmost start `start`, return the longest extent
     /// of a match anchored exactly there = POSIX leftmost-longest end.
-    fn longest_end_at(&self, line: &[u8], start: usize) -> Option<usize> {
+    fn longest_end_at(&self, line: &[u8], start: usize) -> io::Result<Option<usize>> {
         let mut region = Region::new();
         self.longest_anchored
-            .match_at(line, start, Some(&mut region));
-        region.pos(0).map(|(_, end)| end)
+            .match_at(line, start, Some(&mut region), self.is_pcre)?;
+        Ok(region.pos(0).map(|(_, end)| end))
     }
 
     /// True if any match exists in `line` (including zero-length).
-    fn is_match(&self, line: &[u8]) -> bool {
-        self.leftmost.search(line, 0, None).is_some()
+    fn is_match(&self, line: &[u8]) -> io::Result<bool> {
+        Ok(self.leftmost.search(line, 0, None, self.is_pcre)?.is_some())
     }
 }
 
@@ -428,7 +448,13 @@ impl OnigRegex {
         }
     }
 
-    fn search(&self, line: &[u8], offset: usize, region: Option<&mut Region>) -> Option<usize> {
+    fn search(
+        &self,
+        line: &[u8],
+        offset: usize,
+        region: Option<&mut Region>,
+        is_pcre: bool,
+    ) -> io::Result<Option<usize>> {
         debug_assert!(offset <= line.len());
         // SAFETY: `offset` is bounded by `line.len()`, all byte pointers are
         // derived from `line`, and `region_ptr` preserves `onig::Region`'s
@@ -446,10 +472,16 @@ impl OnigRegex {
                 SearchOptions::SEARCH_OPTION_NONE.bits(),
             )
         };
-        onig_match_result(result)
+        onig_match_result(result, is_pcre)
     }
 
-    fn match_at(&self, line: &[u8], offset: usize, region: Option<&mut Region>) -> Option<usize> {
+    fn match_at(
+        &self,
+        line: &[u8],
+        offset: usize,
+        region: Option<&mut Region>,
+        is_pcre: bool,
+    ) -> io::Result<Option<usize>> {
         debug_assert!(offset <= line.len());
         // SAFETY: `offset` is bounded by `line.len()`, all byte pointers are
         // derived from `line`, and `region_ptr` preserves `onig::Region`'s
@@ -465,7 +497,7 @@ impl OnigRegex {
                 SearchOptions::SEARCH_OPTION_NONE.bits(),
             )
         };
-        onig_match_result(result)
+        onig_match_result(result, is_pcre)
     }
 }
 
@@ -497,16 +529,24 @@ fn region_ptr(region: Option<&mut Region>) -> *mut onig_sys::OnigRegion {
     })
 }
 
-fn onig_match_result(result: i32) -> Option<usize> {
+fn onig_match_result(result: i32, is_pcre: bool) -> io::Result<Option<usize>> {
     if result >= 0 {
-        Some(result as usize)
+        Ok(Some(result as usize))
     } else if result == onig_sys::ONIG_MISMATCH {
-        None
+        Ok(None)
+    } else if result == ONIGERR_RETRY_LIMIT_IN_MATCH_OVER
+        || result == ONIGERR_MATCH_STACK_LIMIT_OVER
+    {
+        if is_pcre {
+            Err(io::Error::other("exceeded PCRE's backtracking limit"))
+        } else {
+            Err(io::Error::other("exceeded backtracking limit"))
+        }
     } else {
-        panic!(
-            "Onig: Regex match error: {}",
+        Err(io::Error::other(format!(
+            "regex match error: {}",
             onig_error_message(result, null())
-        );
+        )))
     }
 }
 
