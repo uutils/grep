@@ -110,7 +110,7 @@ impl<'a> Searcher<'a> {
             ManuallyDrop::new(unsafe { File::from_raw_fd(0) })
         };
 
-        let path = Path::new(&self.config.label);
+        let path = Path::new(self.config.label);
 
         // Like a named file, a regular file on stdin sizes the field from its
         // length; anything else (a pipe, a terminal) gets a fixed width.
@@ -136,7 +136,7 @@ impl<'a> Searcher<'a> {
             let _ = stdin.seek(SeekFrom::Start(start + self.session_last_match_end));
         }
 
-        self.record_result(OsStr::new(&self.config.label), result)
+        self.record_result(self.config.label, result)
     }
 
     /// Flush output and produce the overall result.
