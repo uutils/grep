@@ -176,17 +176,18 @@ impl<'a> Searcher<'a> {
                 Ok(entry) => entry,
                 Err(err) => {
                     self.had_error = true;
-                    if let Some(path) = err.path() {
-                        let path = if strip_root {
-                            Self::strip_dot_prefix(path)
-                        } else {
-                            path
-                        };
-                        if err.loop_ancestor().is_some() {
-                            self.writer.report_recursive_loop(path);
-                        } else if let Some(io_err) = err.io_error() {
-                            self.writer.report_io_error(path.as_os_str(), io_err);
-                        }
+                    let path = err.path().unwrap_or(start);
+                    let path = if strip_root {
+                        Self::strip_dot_prefix(path)
+                    } else {
+                        path
+                    };
+                    if err.loop_ancestor().is_some() {
+                        self.writer.report_recursive_loop(path);
+                    } else {
+                        let fallback_err = io::Error::new(io::ErrorKind::Other, "walk error");
+                        let io_err = err.io_error().unwrap_or(&fallback_err);
+                        self.writer.report_io_error(path.as_os_str(), io_err);
                     }
                     continue;
                 }
