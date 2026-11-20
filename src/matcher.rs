@@ -224,9 +224,36 @@ impl Cursor<'_> {
             .longest_end_at(self.line, start)
             .unwrap_or(leftmost_end);
         // Advance the next search past the match we just found.
-        // Zero-length matches need a +1 nudge to avoid spinning forever.
-        self.offset = end.max(start + 1);
+        // Zero-length matches advance past the current character to avoid
+        // spinning forever and to prevent resuming in the middle of a multi-byte sequence.
+        self.offset = if end > start {
+            end
+        } else {
+            start + utf8_char_step(self.line, start)
+        };
         self.pending = Some((start, end));
+    }
+}
+
+/// Returns the byte length of the UTF-8 character starting at `line[start]`,
+/// or 1 if `start` is out of bounds or points to an invalid/incomplete leading byte.
+fn utf8_char_step(line: &[u8], start: usize) -> usize {
+    if start >= line.len() {
+        return 1;
+    }
+    let chunk = &line[start..line.len().min(start + 4)];
+    match std::str::from_utf8(chunk) {
+        Ok(s) => s.chars().next().map_or(1, |c| c.len_utf8()),
+        Err(e) => {
+            if e.valid_up_to() > 0 {
+                std::str::from_utf8(&chunk[..e.valid_up_to()])
+                    .ok()
+                    .and_then(|s| s.chars().next())
+                    .map_or(1, |c| c.len_utf8())
+            } else {
+                1
+            }
+        }
     }
 }
 

@@ -2373,6 +2373,7 @@ fn only_matching_with_context() {
 }
 
 #[test]
+#[test]
 fn color_when_synonyms() {
     // GNU grep accepts these spellings of WHEN, compared case-insensitively.
     for when in ["yes", "force", "ALWAYS", "Always"] {
@@ -2493,4 +2494,19 @@ fn non_utf8_pattern_file_name_and_label() {
             .fails_with_code(1)
             .no_stdout();
     }
+}
+
+#[test]
+fn only_matching_empty_match_does_not_split_utf8() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-ob", r"\w*"])
+        .pipe_in("run \u{1F635}rm now\n")
+        .succeeds()
+        .stdout_only("0:run\n8:rm\n11:now\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "[^、]*"])
+        .pipe_in("a、b\n")
+        .succeeds()
+        .stdout_only("a\nb\n");
 }
