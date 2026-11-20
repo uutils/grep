@@ -293,11 +293,21 @@ impl<'a> Searcher<'a> {
     /// Whether a selected line must be withheld because it is not valid UTF-8.
     /// In a UTF-8 locale GNU grep leaves such lines out but keeps printing the
     /// others, and reports the binary match once at the end.
-    fn session_withholds_line(&self, line: &[u8]) -> bool {
-        self.withhold_encoding_errors
-            && self.config.binary_mode == BinaryMode::Binary
-            && !self.session_binary_detected
-            && std::str::from_utf8(line).is_err()
+    /// Checks encoding validity for a matching line. In a unibyte locale, an encoding
+    /// error marks the input binary and may stop search. In a UTF-8 locale, it withholds
+    /// the line without stopping search. Returns `false` if search should terminate.
+    fn session_check_encoding(&mut self, line: &[u8], withhold: &mut bool) -> bool {
+        if std::str::from_utf8(line).is_err() {
+            if self.withhold_encoding_errors {
+                *withhold =
+                    self.config.binary_mode == BinaryMode::Binary && !self.session_binary_detected;
+            } else if self.config.binary_mode != BinaryMode::WithoutMatch
+                && !self.session_mark_binary_if(|| true)
+            {
+                return false;
+            }
+        }
+        true
     }
 
     /// Whether the current configuration can use the buffer-at-a-time fast
@@ -565,14 +575,10 @@ impl<'a> Searcher<'a> {
             }
 
             if let Some(positions) = self.session_match_line(line) {
-                if !self.withhold_encoding_errors
-                    && self.config.binary_mode != BinaryMode::WithoutMatch
-                    && !self.session_mark_binary_if(|| std::str::from_utf8(line).is_err())
-                {
+                let mut withhold = false;
+                if !self.session_check_encoding(line, &mut withhold) {
                     return Ok(false);
                 }
-
-                let withhold = self.session_withholds_line(line);
                 self.session_encoding_error |= withhold;
 
                 self.session_last_match_end = after_line;

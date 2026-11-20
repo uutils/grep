@@ -1549,14 +1549,16 @@ fn invalid_utf8_line_stops_output_in_unibyte_locale() {
     // In the C locale an encoding error makes the file binary: output stops at
     // that line and the notice follows. Covers both search paths.
     let (scene, _) = ucmd();
-    scene.fixtures.write_bytes("u", b"a\n\x80\nb\n");
+    scene
+        .fixtures
+        .write_bytes("u", b"header\ncorrupt\x80data\nfooter\n");
     for pattern in ["", "^"] {
         scene
             .cmd(env!("CARGO_BIN_EXE_grep"))
             .env("LC_ALL", "C")
             .args(&[pattern, "u"])
             .succeeds()
-            .stdout_is("a\n")
+            .stdout_is("header\n")
             .stderr_is("grep: u: binary file matches\n");
     }
 }
