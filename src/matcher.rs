@@ -279,22 +279,8 @@ impl CompiledPattern {
             syntax.enable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_UNMATCHED_CLOSE_SUBEXP);
         }
 
-        if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended)
-            && has_confusing_bracket(pattern.as_bytes())
-        {
-            return Err(USimpleError::new(
-                2,
-                "character class syntax is [[:space:]], not [:space:]".to_string(),
-            ));
-        }
-
-        if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended)
-            && has_interval_over_limit(pattern.as_bytes(), config.regex_mode == RegexMode::Extended)
-        {
-            return Err(USimpleError::new(
-                2,
-                "Regular expression too big".to_string(),
-            ));
+        if let Err(msg) = precheck_pattern(pattern.as_bytes(), config.regex_mode) {
+            return Err(USimpleError::new(2, msg.to_string()));
         }
 
         let mut normalized_pattern = None;
@@ -549,77 +535,77 @@ fn strip_leading_interval_repeat(pattern: &str) -> Option<&str> {
 /// those: a bracket whose first and last characters are colons, that holds at
 /// least one other character, and that contains no range, class, equivalence
 /// class or collating element.
-fn has_confusing_bracket(pattern: &[u8]) -> bool {
-    let mut i = 0;
-    while i < pattern.len() {
-        match pattern[i] {
-            b'\\' => i += 2,
-            b'[' => {
-                let (confusing, next) = scan_bracket(pattern, i + 1);
-                if confusing {
-                    return true;
-                }
-                i = next;
-            }
-            _ => i += 1,
-        }
-    }
-    false
-}
-
 /// The largest interval count GNU grep accepts, in either bound.
 const MAX_INTERVAL_COUNT: u64 = 32767;
 
-/// Whether `pattern` has an interval (`{m,n}` in extended mode, `\{m,n\}` in
-/// basic mode) with a count above [`MAX_INTERVAL_COUNT`]. Oniguruma's own
-/// limit is higher, so GNU's has to be checked here.
-fn has_interval_over_limit(pattern: &[u8], extended: bool) -> bool {
+/// Inspects `pattern` before compilation for errors that Oniguruma does not reject
+/// as GNU grep does: misspelled character classes (`[:space:]`) and interval counts
+/// above [`MAX_INTERVAL_COUNT`].
+fn precheck_pattern(pattern: &[u8], mode: RegexMode) -> Result<(), &'static str> {
+    if !matches!(mode, RegexMode::Basic | RegexMode::Extended) {
+        return Ok(());
+    }
+    let extended = mode == RegexMode::Extended;
     let mut i = 0;
     while i < pattern.len() {
         match pattern[i] {
             b'\\' if !extended && pattern.get(i + 1) == Some(&b'{') => {
                 if interval_over_limit(pattern, i + 2, b"\\}") {
-                    return true;
+                    return Err("Regular expression too big");
                 }
                 i += 2;
             }
             b'\\' => i += 2,
-            b'[' => i = scan_bracket(pattern, i + 1).1,
+            b'[' => {
+                let (confusing, next) = scan_bracket(pattern, i + 1);
+                if confusing {
+                    return Err("character class syntax is [[:space:]], not [:space:]");
+                }
+                i = next;
+            }
             b'{' if extended => {
                 if interval_over_limit(pattern, i + 1, b"}") {
-                    return true;
+                    return Err("Regular expression too big");
                 }
                 i += 1;
             }
             _ => i += 1,
         }
     }
-    false
+    Ok(())
+}
+
+#[cfg(test)]
+fn has_confusing_bracket(pattern: &[u8]) -> bool {
+    precheck_pattern(pattern, RegexMode::Basic)
+        == Err("character class syntax is [[:space:]], not [:space:]")
 }
 
 /// Whether the interval body at `start`, `m`, `m,`, `,n` or `m,n` followed
 /// by `close`, has a count above [`MAX_INTERVAL_COUNT`].
 fn interval_over_limit(pattern: &[u8], start: usize, close: &[u8]) -> bool {
-    let mut too_big = false;
-    let mut i = start;
-    let mut has_comma = false;
-    loop {
-        let digits = pattern[i..]
-            .iter()
-            .take_while(|b| b.is_ascii_digit())
-            .count();
-        let count = pattern[i..i + digits].iter().try_fold(0u64, |n, &b| {
+    let rest = &pattern[start..];
+    let Some(len) = rest.windows(close.len()).position(|w| w == close) else {
+        return false;
+    };
+    let body = &rest[..len];
+    let (min, max) = match body.splitn(2, |&b| b == b',').collect::<Vec<_>>()[..] {
+        [single] => (single, single),
+        [min, max] => (min, max),
+        _ => return false,
+    };
+    let is_over = |part: &[u8]| -> bool {
+        if part.is_empty() || !part.iter().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        let parsed = part.iter().try_fold(0u64, |n, &b| {
             n.checked_mul(10)?.checked_add(u64::from(b - b'0'))
         });
-        too_big |= count.is_none_or(|n| n > MAX_INTERVAL_COUNT) && digits > 0;
-        i += digits;
-        if !has_comma && pattern.get(i) == Some(&b',') {
-            has_comma = true;
-            i += 1;
-            continue;
-        }
-        return too_big && pattern[i..].starts_with(close);
-    }
+        parsed.is_none_or(|n| n > MAX_INTERVAL_COUNT)
+    };
+    let has_digits = (!min.is_empty() && min.iter().all(|b| b.is_ascii_digit()))
+        || (!max.is_empty() && max.iter().all(|b| b.is_ascii_digit()));
+    has_digits && (is_over(min) || is_over(max))
 }
 
 /// Scan the body of a bracket expression starting at `start` (just past the
