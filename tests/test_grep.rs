@@ -2228,3 +2228,24 @@ fn only_matching_with_context() {
         .succeeds()
         .stdout_only("4:xx\n");
 }
+
+#[test]
+fn color_when_synonyms() {
+    // GNU grep accepts these spellings of WHEN, compared case-insensitively.
+    for when in ["yes", "force", "ALWAYS", "Always"] {
+        let (_s, mut c) = ucmd();
+        c.arg(format!("--color={when}"))
+            .arg("foo")
+            .pipe_in("foo\n")
+            .succeeds()
+            .stdout_only("\x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\n");
+    }
+    for when in ["no", "none", "NEVER", "tty", "if-tty", "Auto"] {
+        let (_s, mut c) = ucmd();
+        c.arg(format!("--colour={when}"))
+            .arg("foo")
+            .pipe_in("foo\n")
+            .succeeds()
+            .stdout_only("foo\n");
+    }
+}
