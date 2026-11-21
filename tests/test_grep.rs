@@ -763,6 +763,37 @@ fn no_pattern_is_usage_error() {
 }
 
 #[test]
+fn unknown_option_is_reported_like_gnu() {
+    // uucore prefixes the error with the binary's file name.
+    let name = if cfg!(windows) { "grep.exe" } else { "grep" };
+    for (args, problem) in [
+        (
+            &["--no-such-flag-here", "q"][..],
+            "unrecognized option '--no-such-flag-here'",
+        ),
+        // GNU names the whole argument, value included.
+        (&["--no-such=1", "q"], "unrecognized option '--no-such=1'"),
+        (&["-j", "q"], "invalid option -- 'j'"),
+        // An unknown letter after a valid one in the same cluster.
+        (&["-wj", "q"], "invalid option -- 'j'"),
+        // The argument that was rejected, not a pattern spelled like it.
+        (&["--foo", "-e", "--foo=x"], "unrecognized option '--foo'"),
+        (&["-e", "--foo=x", "--foo"], "unrecognized option '--foo'"),
+    ] {
+        let expected = format!(
+            "{name}: {problem}\n\
+             Usage: grep [OPTION]... PATTERNS [FILE]...\n\
+             Try 'grep --help' for more information.\n"
+        );
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .fails_with_code(2)
+            .no_stdout()
+            .stderr_is(expected);
+    }
+}
+
+#[test]
 fn count_modes() {
     // Count for single stdin.
     let (_s, mut c) = ucmd();
