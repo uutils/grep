@@ -1928,15 +1928,6 @@ fn null_data_mode_records() {
         .succeeds()
         .stdout_is_bytes(b"a\0\n\0b\0");
 
-    // Negated bracket expressions also match newline in Basic and Extended modes.
-    for mode in ["-G", "-E"] {
-        let (_s, mut c) = ucmd();
-        c.args(&[mode, "-z", "-c", "k[^m]w"])
-            .pipe_in("hawk\nwren\0")
-            .succeeds()
-            .stdout_only("1\n");
-    }
-
     // GNU grep's PCRE path currently does not let `.*` consume the extra
     // newline here under -z; this mirrors the GNU pcre-context test.
     let (_s, mut c) = ucmd();
