@@ -172,8 +172,25 @@ impl<'a> Searcher<'a> {
             .into_iter();
 
         while let Some(entry) = walker.next() {
-            let Ok(entry) = entry else {
-                continue;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    self.had_error = true;
+                    let path = err.path().unwrap_or(start);
+                    let path = if strip_root {
+                        Self::strip_dot_prefix(path)
+                    } else {
+                        path
+                    };
+                    if err.loop_ancestor().is_some() {
+                        self.writer.report_recursive_loop(path);
+                    } else {
+                        let fallback_err = io::Error::other("walk error");
+                        let io_err = err.io_error().unwrap_or(&fallback_err);
+                        self.writer.report_io_error(path.as_os_str(), io_err);
+                    }
+                    continue;
+                }
             };
 
             let file_type = entry.file_type();
