@@ -87,6 +87,16 @@ pub struct GlobSet {
 }
 
 #[doc(hidden)]
+/// A pattern to match, together with where it came from.
+#[derive(Clone, Copy, Debug)]
+pub struct Pattern<'a> {
+    pub text: &'a str,
+    /// The `-f` file (`-` for standard input) and 1-based line the pattern was
+    /// read from, or `None` for `-e` and positional patterns. GNU grep names
+    /// this location when such a pattern fails to compile.
+    pub origin: Option<(&'a str, usize)>,
+}
+
 pub struct Config<'a> {
     // Searcher
     pub directory_mode: DirectoryMode,
@@ -104,7 +114,7 @@ pub struct Config<'a> {
     pub has_context: bool,
 
     // Matcher
-    pub patterns: &'a [&'a str],
+    pub patterns: &'a [Pattern<'a>],
     pub regex_mode: RegexMode,
     pub ignore_case: bool,
     pub invert_match: bool,
@@ -236,7 +246,10 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     {
         for expr in regexp {
             for line in expr.split('\n') {
-                patterns.push(line);
+                patterns.push(Pattern {
+                    text: line,
+                    origin: None,
+                });
             }
         }
 
@@ -250,13 +263,16 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
             } else {
                 std::fs::read_to_string(path).map_err(|err| read_error(path, &err))?
             };
-            pattern_strings.push(contents);
+            pattern_strings.push((path.as_str(), contents));
         }
-        for contents in &pattern_strings {
+        for (path, contents) in &pattern_strings {
             if !contents.is_empty() {
                 let body = contents.strip_suffix('\n').unwrap_or(contents);
-                for line in body.split('\n') {
-                    patterns.push(line);
+                for (index, line) in body.split('\n').enumerate() {
+                    patterns.push(Pattern {
+                        text: line,
+                        origin: Some((*path, index + 1)),
+                    });
                 }
             }
         }
@@ -266,7 +282,10 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
                 .to_str()
                 .ok_or_else(|| USimpleError::new(2, "pattern must be valid UTF-8".to_string()))?;
             for line in pat.split('\n') {
-                patterns.push(line);
+                patterns.push(Pattern {
+                    text: line,
+                    origin: None,
+                });
             }
         }
     }
@@ -460,7 +479,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
 
     // An empty pattern matches every line; with `-v`, GNU grep selects no lines
     // and exits as "no match" without reading any input files.
-    if invert_match && patterns.iter().any(|pattern| pattern.is_empty()) {
+    if invert_match && patterns.iter().any(|pattern| pattern.text.is_empty()) {
         return Err(ExitCode::new(1));
     }
 
