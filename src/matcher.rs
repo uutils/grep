@@ -316,10 +316,12 @@ impl CompiledPattern {
             options |= RegexOptions::REGEX_OPTION_IGNORECASE;
         }
         // In GNU grep's Basic/Extended modes, `-z` makes newline ordinary data
-        // for `.`, but PCRE keeps its existing non-DOTALL behavior. The GNU
-        // `pcre-context` test documents this as current behavior until PCRE2.
+        // for `.` and negated bracket expressions `[^...]`, but PCRE keeps its
+        // existing non-DOTALL behavior. The GNU `pcre-context` test documents
+        // this as current behavior until PCRE2.
         if config.null_data && matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended) {
             options |= RegexOptions::REGEX_OPTION_MULTILINE;
+            syntax.disable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_NOT_NEWLINE_IN_NEGATIVE_CC);
         }
 
         fn compile_with(
