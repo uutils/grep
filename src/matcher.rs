@@ -299,6 +299,19 @@ impl CompiledPattern {
             pattern
         };
 
+        let normalized_null_data_pattern = match (config.null_data, config.regex_mode) {
+            (true, RegexMode::Basic) => {
+                Some(normalize_null_data_posix_dollar_anchors(pattern, true))
+            }
+            (true, RegexMode::Extended) => {
+                Some(normalize_null_data_posix_dollar_anchors(pattern, false))
+            }
+            (true, RegexMode::Perl) => Some(normalize_null_data_perl_dollar_anchors(pattern)),
+            _ => None,
+        };
+
+        let pattern = normalized_null_data_pattern.as_deref().unwrap_or(pattern);
+
         if config.regex_mode == RegexMode::Perl {
             // GNU grep supports `(?P<name>...)`.
             // Unfortunately, the onig crate defines the OP2 flag without the
@@ -319,7 +332,7 @@ impl CompiledPattern {
         // for `.`, but PCRE keeps its existing non-DOTALL behavior. The GNU
         // `pcre-context` test documents this as current behavior until PCRE2.
         if config.null_data && matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended) {
-            options |= RegexOptions::REGEX_OPTION_MULTILINE;
+            options |= RegexOptions::REGEX_OPTION_MULTILINE | RegexOptions::REGEX_OPTION_SINGLELINE;
         }
 
         fn compile_with(
@@ -550,7 +563,7 @@ fn has_confusing_bracket(pattern: &[u8]) -> bool {
                 if confusing {
                     return true;
                 }
-                i = next;
+                i = next.unwrap_or(pattern.len());
             }
             _ => i += 1,
         }
@@ -558,10 +571,101 @@ fn has_confusing_bracket(pattern: &[u8]) -> bool {
     false
 }
 
+fn normalize_null_data_posix_dollar_anchors(pattern: &str, basic: bool) -> String {
+    let bytes = pattern.as_bytes();
+
+    let mut output = String::with_capacity(pattern.len());
+    let mut copied_until = 0;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            // Skip escaped characters.
+            b'\\' => {
+                i = (i + 2).min(bytes.len());
+            }
+
+            // Skip an entire bracket expression.
+            b'[' => {
+                let (_, Some(end)) = scan_bracket(bytes, i + 1) else {
+                    break;
+                };
+                i = end;
+            }
+
+            b'$' => {
+                let is_anchor = if basic {
+                    i + 1 == bytes.len()
+                        || (bytes.get(i + 1) == Some(&b'\\')
+                            && matches!(bytes.get(i + 2), Some(b')' | b'|')))
+                } else {
+                    true
+                };
+
+                if is_anchor {
+                    output.push_str(&pattern[copied_until..i]);
+                    output.push_str("\\'");
+
+                    i += 1;
+                    copied_until = i;
+                } else {
+                    i += 1;
+                }
+            }
+
+            _ => i += 1,
+        }
+    }
+
+    output.push_str(&pattern[copied_until..]);
+    output
+}
+
+fn normalize_null_data_perl_dollar_anchors(pattern: &str) -> String {
+    let bytes = pattern.as_bytes();
+    let mut output = String::with_capacity(pattern.len());
+    let mut copied_until = 0;
+    let mut i = 0;
+    let mut in_quote = false;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                if in_quote {
+                    if bytes.get(i + 1) == Some(&b'E') {
+                        in_quote = false;
+                    }
+                    i = (i + 2).min(bytes.len());
+                } else if bytes.get(i + 1) == Some(&b'Q') {
+                    in_quote = true;
+                    i += 2;
+                } else {
+                    i = (i + 2).min(bytes.len());
+                }
+            }
+            b'[' if !in_quote => {
+                let (_, Some(end)) = scan_bracket(bytes, i + 1) else {
+                    break;
+                };
+                i = end;
+            }
+            b'$' if !in_quote => {
+                output.push_str(&pattern[copied_until..i]);
+                output.push_str("\\z");
+                i += 1;
+                copied_until = i;
+            }
+            _ => i += 1,
+        }
+    }
+
+    output.push_str(&pattern[copied_until..]);
+    output
+}
 /// Scan the body of a bracket expression starting at `start` (just past the
 /// `[`). Returns whether it is a misspelled character class and the index just
 /// past its closing `]`.
-fn scan_bracket(pattern: &[u8], start: usize) -> (bool, usize) {
+fn scan_bracket(pattern: &[u8], start: usize) -> (bool, Option<usize>) {
     const FIRST_IS_COLON: u8 = 1;
     const LAST_IS_COLON: u8 = 2;
     const HAS_OTHER: u8 = 4;
@@ -579,9 +683,16 @@ fn scan_bracket(pattern: &[u8], start: usize) -> (bool, usize) {
     };
     while i < pattern.len() {
         let c = pattern[i];
+        if c == b'\\' {
+            i = (i + 2).min(pattern.len());
+            continue;
+        }
         // A `]` right at the start of the body is an ordinary character.
         if c == b']' && i != body_start {
-            return (state == FIRST_IS_COLON | LAST_IS_COLON | HAS_OTHER, i + 1);
+            return (
+                state == FIRST_IS_COLON | LAST_IS_COLON | HAS_OTHER,
+                Some(i + 1),
+            );
         }
         // Only the character just before the closing `]` counts as the last one.
         state &= !LAST_IS_COLON;
@@ -606,7 +717,7 @@ fn scan_bracket(pattern: &[u8], start: usize) -> (bool, usize) {
         i += 1;
     }
     // Unterminated bracket: the regex engine reports that on its own.
-    (false, pattern.len())
+    (false, None)
 }
 
 /// Index just past the `:]`, `.]` or `=]` closing a `[: [. [=` subexpression
@@ -693,6 +804,53 @@ mod tests {
             "[a-z]+[0-9]",    // no colons at all
         ] {
             assert!(!has_confusing_bracket(p.as_bytes()), "pattern {p:?}");
+        }
+    }
+
+    #[test]
+    fn null_data_posix_dollar_anchor_normalization() {
+        use super::normalize_null_data_posix_dollar_anchors;
+
+        let cases = [
+            (true, "foo$", "foo\\'"),
+            (true, r"\(foo$\)", r"\(foo\'\)"),
+            (true, r"foo$\|bar", r"foo\'\|bar"),
+            (true, "foo$bar", "foo$bar"),
+            (true, r"foo\$", r"foo\$"),
+            (true, "foo[$]bar", "foo[$]bar"),
+            (false, "foo$", "foo\\'"),
+            (false, "foo$bar", "foo\\'bar"),
+            (false, r"foo\$", r"foo\$"),
+            (false, "foo[$]bar", "foo[$]bar"),
+        ];
+
+        for (basic, input, expected) in cases {
+            let actual = normalize_null_data_posix_dollar_anchors(input, basic);
+
+            assert_eq!(actual, expected, "basic={basic}, input={input:?}");
+        }
+    }
+
+    #[test]
+    fn null_data_perl_dollar_anchor_normalization() {
+        use super::normalize_null_data_perl_dollar_anchors;
+
+        let cases = [
+            ("foo$", "foo\\z"),
+            ("foo$bar", "foo\\zbar"),
+            (r"foo\$", r"foo\$"),
+            ("foo[$]bar", "foo[$]bar"),
+            (r"\Qfoo$\E", r"\Qfoo$\E"),
+            (r"\Qfoo\E$", "\\Qfoo\\E\\z"),
+            (r"\(foo$\)", r"\(foo\z\)"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                normalize_null_data_perl_dollar_anchors(input),
+                expected,
+                "input={input:?}"
+            );
         }
     }
 }
