@@ -288,6 +288,13 @@ impl CompiledPattern {
             ));
         }
 
+        if config.regex_mode == RegexMode::Extended && has_empty_interval(pattern.as_bytes()) {
+            return Err(USimpleError::new(
+                2,
+                "Invalid content of \\{\\}".to_string(),
+            ));
+        }
+
         let mut normalized_pattern = None;
         let pattern = if config.regex_mode == RegexMode::Extended {
             if let Some((op, rest)) = strip_leading_repeat_operator(pattern) {
@@ -533,6 +540,40 @@ fn strip_leading_interval_repeat(pattern: &str) -> Option<&str> {
         && body.bytes().all(|b| b.is_ascii_digit() || b == b',')
         && body.bytes().any(|b| b.is_ascii_digit());
     is_interval.then_some(&pattern[close + 1..])
+}
+
+/// Whether the extended `pattern` has an empty interval `{}` after something it
+/// could repeat. GNU grep rejects it; a `{}` at the start of the pattern or of
+/// an alternative or group, or after `^`, is literal text.
+fn has_empty_interval(pattern: &[u8]) -> bool {
+    let mut i = 0;
+    let mut after_atom = false;
+    while i < pattern.len() {
+        match pattern[i] {
+            b'{' if after_atom && pattern.get(i + 1) == Some(&b'}') => return true,
+            b'\\' => {
+                i += 1;
+                if i < pattern.len() {
+                    after_atom = true;
+                    i += 1;
+                }
+                continue;
+            }
+            b'[' => {
+                i = scan_bracket(pattern, i + 1).1;
+                after_atom = true;
+                continue;
+            }
+            b'(' | b'|' | b'^' => {
+                after_atom = false;
+            }
+            _ => {
+                after_atom = true;
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 /// True when `pattern` holds a bracket expression that looks like a misspelled
