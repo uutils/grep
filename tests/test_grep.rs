@@ -2415,6 +2415,40 @@ fn non_utf8_pattern_file_name_and_label() {
         .succeeds()
         .stdout_is_bytes(b"in\xfe:foo\n");
 
+    let (_s, mut c) = ucmd();
+    c.arg("-H")
+        .arg("-Z")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_is_bytes(b"in\xfe\0foo\n");
+
+    let (_s, mut c) = ucmd();
+    c.arg("-l")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_is_bytes(b"in\xfe\n");
+
+    let (_s, mut c) = ucmd();
+    c.arg("-l")
+        .arg("-Z")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_is_bytes(b"in\xfe\0");
+
+    let (_s, mut c) = ucmd();
+    c.arg("-L")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("bar")
+        .pipe_in("foo\n")
+        .fails_with_code(1)
+        .stdout_is_bytes(b"in\xfe\n");
+
     // Creating files with non-UTF-8 names is rejected by Darwin/macOS APFS with EILSEQ (errno 92).
     // On Linux and other Unix filesystems, arbitrary byte file names are fully supported.
     if !cfg!(target_os = "macos") {
