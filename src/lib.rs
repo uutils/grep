@@ -370,6 +370,14 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let exclude_dir_globs = {
         let mut patterns = GlobSet::with_capacity(exclude_dir.len());
         for pattern in exclude_dir {
+            // GNU grep ignores trailing slashes in --exclude-dir (NEWS 2.19),
+            // because the match is against the directory's bare name.
+            let normalized = pattern.trim_end_matches('/');
+            let pattern = if normalized.is_empty() {
+                pattern.as_str()
+            } else {
+                normalized
+            };
             patterns.add(false, pattern)?;
         }
         patterns
