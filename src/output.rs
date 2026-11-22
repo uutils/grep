@@ -3,8 +3,8 @@
 // For the full copyright and license information, please view the LICENSE
 // file that was distributed with this source code.
 
-use crate::context_buffer::LineView;
 use crate::Config;
+use crate::context_buffer::LineView;
 use std::ffi::OsStr;
 use std::io::{self, BufWriter, StdoutLock, Write};
 use std::path::Path;

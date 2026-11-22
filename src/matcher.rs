@@ -7,7 +7,7 @@ use crate::{Config, RegexMode};
 use memchr::memmem;
 use onig::{RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior, SyntaxOperator};
 use onig_sys::{
-    OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8, ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS,
+    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
 };
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
