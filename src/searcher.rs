@@ -184,9 +184,7 @@ impl<'a> Searcher<'a> {
                     };
                     if err.loop_ancestor().is_some() {
                         self.writer.report_recursive_loop(path);
-                    } else {
-                        let fallback_err = io::Error::other("walk error");
-                        let io_err = err.io_error().unwrap_or(&fallback_err);
+                    } else if let Some(io_err) = err.io_error() {
                         self.writer.report_io_error(path.as_os_str(), io_err);
                     }
                     continue;
