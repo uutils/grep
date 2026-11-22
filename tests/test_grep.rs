@@ -2508,4 +2508,23 @@ fn only_matching_empty_match_does_not_split_utf8() {
         .pipe_in("a、b\n")
         .succeeds()
         .stdout_only("a\nb\n");
+
+    // Invalid leading byte after an empty match: step falls back to 1,
+    // so the next search starts at the following byte (offset 3).
+    let (_s, mut c) = ucmd();
+    c.args(&["-a", "-ob", "-ea*"])
+        .pipe_in(&b"xa\xffa\n"[..])
+        .succeeds()
+        .stdout_only("1:a\n3:a\n");
+
+    // --color must also skip the whole character, not highlight a torn tail.
+    let red = "\x1b[01;31m\x1b[K";
+    let reset = "\x1b[m\x1b[K";
+    let (_s, mut c) = ucmd();
+    c.args(&["--color=always", r"-e\w*"])
+        .pipe_in("run \u{1F635}rm now\n")
+        .succeeds()
+        .stdout_only(format!(
+            "{red}run{reset} \u{1F635}{red}rm{reset} {red}now{reset}\n"
+        ));
 }

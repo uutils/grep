@@ -238,23 +238,10 @@ impl Cursor<'_> {
 /// Returns the byte length of the UTF-8 character starting at `line[start]`,
 /// or 1 if `start` is out of bounds or points to an invalid/incomplete leading byte.
 fn utf8_char_step(line: &[u8], start: usize) -> usize {
-    if start >= line.len() {
-        return 1;
-    }
-    let chunk = &line[start..line.len().min(start + 4)];
-    match std::str::from_utf8(chunk) {
-        Ok(s) => s.chars().next().map_or(1, |c| c.len_utf8()),
-        Err(e) => {
-            if e.valid_up_to() > 0 {
-                std::str::from_utf8(&chunk[..e.valid_up_to()])
-                    .ok()
-                    .and_then(|s| s.chars().next())
-                    .map_or(1, |c| c.len_utf8())
-            } else {
-                1
-            }
-        }
-    }
+    line.get(start..)
+        .and_then(|chunk| chunk.utf8_chunks().next())
+        .and_then(|c| c.valid().chars().next())
+        .map_or(1, char::len_utf8)
 }
 
 /// Return the literal bytes of `pattern` when a raw byte-for-byte substring
