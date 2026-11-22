@@ -18,6 +18,7 @@ use crate::output::OutputWriter;
 use crate::searcher::Searcher;
 use clap::builder::{EnumValueParser, PossibleValue};
 use clap::{Arg, ArgAction, Command, ValueEnum};
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal as _, Read};
 use std::path::Path;
@@ -300,6 +301,13 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
             2,
             "no PATTERN specified. Try 'grep --help' for more information.".to_string(),
         ));
+    }
+
+    // GNU grep drops exact duplicate patterns before choosing the matcher,
+    // so `-P -e foo -e foo` is still a single pattern.
+    {
+        let mut seen = HashSet::new();
+        patterns.retain(|pattern| seen.insert(*pattern));
     }
 
     // GNU grep's PCRE backend (-P) supports only a single pattern.
