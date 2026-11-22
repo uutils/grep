@@ -65,7 +65,8 @@ impl<'a> Matcher<'a> {
     pub fn match_line(&self, line: &[u8]) -> Option<Vec<(usize, usize)>> {
         let mut any_seen = false;
         let mut any_selected = false;
-        let positions: Vec<_> = MatchIter::new(&self.patterns, line)
+        let segments = utf8_segments(line);
+        let positions: Vec<_> = MatchIter::new(&self.patterns, line, segments.as_deref())
             .filter(|&(start, end)| {
                 any_seen = true;
                 // Drop matches that don't span the whole line if `-x` was requested.
@@ -148,7 +149,11 @@ struct MatchIter<'a> {
 }
 
 impl<'a> MatchIter<'a> {
-    fn new(patterns: &'a [CompiledPattern], line: &'a [u8]) -> Self {
+    fn new(
+        patterns: &'a [CompiledPattern],
+        line: &'a [u8],
+        segments: Option<&'a [(usize, usize)]>,
+    ) -> Self {
         Self {
             cursors: patterns
                 .iter()
@@ -156,6 +161,7 @@ impl<'a> MatchIter<'a> {
                     let mut c = Cursor {
                         pattern,
                         line,
+                        segments,
                         offset: 0,
                         pending: None,
                     };
@@ -201,6 +207,8 @@ impl<'a> Iterator for MatchIter<'a> {
 struct Cursor<'a> {
     pattern: &'a CompiledPattern,
     line: &'a [u8],
+    /// Valid-UTF-8 runs of `line`, `None` when the whole line is valid.
+    segments: Option<&'a [(usize, usize)]>,
     /// Where the next `search_leftmost` call should start.
     offset: usize,
     /// Pre-fetched next match for this pattern.
@@ -214,14 +222,14 @@ impl Cursor<'_> {
             self.pending = None;
             return;
         }
-        let Some((start, leftmost_end)) = self.pattern.search_leftmost(self.line, self.offset)
+        let Some((start, leftmost_end)) = self.pattern.search_leftmost(self.line, self.segments, self.offset)
         else {
             self.pending = None;
             return;
         };
         let end = self
             .pattern
-            .longest_end_at(self.line, start)
+            .longest_end_at(self.line, self.segments, start)
             .unwrap_or(leftmost_end);
         // Advance the next search past the match we just found.
         // Zero-length matches need a +1 nudge to avoid spinning forever.
@@ -361,25 +369,111 @@ impl CompiledPattern {
     }
 
     /// Find the leftmost match starting at or after `offset`.
-    fn search_leftmost(&self, line: &[u8], offset: usize) -> Option<(usize, usize)> {
-        let mut region = Region::new();
-        self.leftmost.search(line, offset, Some(&mut region))?;
-        region.pos(0)
+    fn search_leftmost(
+        &self,
+        line: &[u8],
+        segments: Option<&[(usize, usize)]>,
+        offset: usize,
+    ) -> Option<(usize, usize)> {
+        let whole = [(0, line.len())];
+        for &(seg_start, seg_end) in segments.unwrap_or(&whole) {
+            if seg_end < offset {
+                continue;
+            }
+            let segment = &line[seg_start..seg_end];
+            let mut region = Region::new();
+            let found = self.leftmost.search(
+                segment,
+                offset.max(seg_start) - seg_start,
+                Some(&mut region),
+                segment_options(line, seg_start, seg_end),
+            );
+            if found.is_some() {
+                return region
+                    .pos(0)
+                    .map(|(start, end)| (start + seg_start, end + seg_start));
+            }
+        }
+        None
     }
 
     /// Given a known leftmost start `start`, return the longest extent
     /// of a match anchored exactly there = POSIX leftmost-longest end.
-    fn longest_end_at(&self, line: &[u8], start: usize) -> Option<usize> {
+    fn longest_end_at(
+        &self,
+        line: &[u8],
+        segments: Option<&[(usize, usize)]>,
+        start: usize,
+    ) -> Option<usize> {
+        let whole = [(0, line.len())];
+        let (seg_start, seg_end) = segments
+            .unwrap_or(&whole)
+            .iter()
+            .copied()
+            .find(|&(s, e)| s <= start && start <= e)?;
+        let segment = &line[seg_start..seg_end];
         let mut region = Region::new();
-        self.longest_anchored
-            .match_at(line, start, Some(&mut region));
-        region.pos(0).map(|(_, end)| end)
+        self.longest_anchored.match_at(
+            segment,
+            start - seg_start,
+            Some(&mut region),
+            segment_options(line, seg_start, seg_end),
+        );
+        region.pos(0).map(|(_, end)| end + seg_start)
     }
 
     /// True if any match exists in `line` (including zero-length).
     fn is_match(&self, line: &[u8]) -> bool {
-        self.leftmost.search(line, 0, None).is_some()
+        let segments = utf8_segments(line);
+        let whole = [(0, line.len())];
+        segments.as_deref().unwrap_or(&whole).iter().any(|&(seg_start, seg_end)| {
+            self.leftmost
+                .search(
+                    &line[seg_start..seg_end],
+                    0,
+                    None,
+                    segment_options(line, seg_start, seg_end),
+                )
+                .is_some()
+        })
     }
+}
+
+/// Split `line` around bytes that are not valid UTF-8, returning the `(start,
+/// end)` of each valid run, including empty ones next to an invalid byte, or
+/// `None` when the whole line is valid. A byte that does not start a valid
+/// character is not a character, so no pattern may match across it (`.`, `\S`
+/// and negated classes included). Matching each run on its own keeps
+/// Oniguruma from stepping over it. Compute this once per line.
+fn utf8_segments(line: &[u8]) -> Option<Vec<(usize, usize)>> {
+    let mut err = std::str::from_utf8(line).err()?;
+    let mut segments = Vec::new();
+    let mut pos = 0;
+    loop {
+        let end = pos + err.valid_up_to();
+        segments.push((pos, end));
+        pos = end + err.error_len().unwrap_or(line.len() - end);
+        match std::str::from_utf8(&line[pos..]) {
+            Ok(_) => {
+                segments.push((pos, line.len()));
+                return Some(segments);
+            }
+            Err(e) => err = e,
+        }
+    }
+}
+
+/// A run that does not touch the start or end of `line` must not let `^` or
+/// `$` match at its edge.
+fn segment_options(line: &[u8], seg_start: usize, seg_end: usize) -> SearchOptions {
+    let mut options = SearchOptions::SEARCH_OPTION_NONE;
+    if seg_start > 0 {
+        options |= SearchOptions::SEARCH_OPTION_NOTBOL;
+    }
+    if seg_end < line.len() {
+        options |= SearchOptions::SEARCH_OPTION_NOTEOL;
+    }
+    options
 }
 
 struct OnigRegex {
@@ -437,7 +531,13 @@ impl OnigRegex {
         }
     }
 
-    fn search(&self, line: &[u8], offset: usize, region: Option<&mut Region>) -> Option<usize> {
+    fn search(
+        &self,
+        line: &[u8],
+        offset: usize,
+        region: Option<&mut Region>,
+        options: SearchOptions,
+    ) -> Option<usize> {
         debug_assert!(offset <= line.len());
         // SAFETY: `offset` is bounded by `line.len()`, all byte pointers are
         // derived from `line`, and `region_ptr` preserves `onig::Region`'s
@@ -452,13 +552,19 @@ impl OnigRegex {
                 start,
                 end,
                 region_ptr(region),
-                SearchOptions::SEARCH_OPTION_NONE.bits(),
+                options.bits(),
             )
         };
         onig_match_result(result)
     }
 
-    fn match_at(&self, line: &[u8], offset: usize, region: Option<&mut Region>) -> Option<usize> {
+    fn match_at(
+        &self,
+        line: &[u8],
+        offset: usize,
+        region: Option<&mut Region>,
+        options: SearchOptions,
+    ) -> Option<usize> {
         debug_assert!(offset <= line.len());
         // SAFETY: `offset` is bounded by `line.len()`, all byte pointers are
         // derived from `line`, and `region_ptr` preserves `onig::Region`'s
@@ -471,7 +577,7 @@ impl OnigRegex {
                 line.as_ptr().add(line.len()),
                 at,
                 region_ptr(region),
-                SearchOptions::SEARCH_OPTION_NONE.bits(),
+                options.bits(),
             )
         };
         onig_match_result(result)

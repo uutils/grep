@@ -2399,3 +2399,46 @@ fn ere_empty_interval_is_error() {
         .fails_with_code(2)
         .no_stdout();
 }
+
+#[test]
+fn dot_and_negated_matchers_skip_invalid_utf8() {
+    // A byte that does not start a valid character is not a character, so
+    // `.`, `\S` and `-x '.*'` must not step over it.
+    let input = &b"ok\nz\xffz\nz\xc0\x80z\nz\xe4\xb8\xadz\n"[..];
+    let cases: &[(&[&str], &str)] = &[
+        (&["-a", "-c", "z.z"], "1\n"),
+        (&["-a", "-c", "-E", r"z\Sz"], "1\n"),
+        (&["-a", "-c", "-E", "z[^a]z"], "1\n"),
+        (&["-a", "-v", "-x", ".*"], "z\u{fffd}z\n"),
+    ];
+    for (args, expected) in cases {
+        let (_s, mut c) = ucmd();
+        c.env("LC_ALL", "C.UTF-8").args(args).pipe_in(input);
+        if args.contains(&"-v") {
+            // The two malformed lines are kept; compare raw bytes.
+            c.succeeds()
+                .stdout_only_bytes(&b"z\xffz\nz\xc0\x80z\n"[..]);
+        } else {
+            c.succeeds().stdout_only(*expected);
+        }
+    }
+}
+
+#[test]
+fn anchors_still_match_only_at_line_edges_around_invalid_utf8() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-a", "-c", "^b"])
+        .pipe_in(&b"a\xffb\n"[..])
+        .fails()
+        .stdout_only("0\n");
+    let (_s, mut c) = ucmd();
+    c.args(&["-a", "-c", "a$"])
+        .pipe_in(&b"a\xffb\n"[..])
+        .fails()
+        .stdout_only("0\n");
+    let (_s, mut c) = ucmd();
+    c.args(&["-a", "-o", "^a.*"])
+        .pipe_in(&b"a\xffb\nab\n"[..])
+        .succeeds()
+        .stdout_only("a\nab\n");
+}
