@@ -1142,6 +1142,28 @@ fn label_only_applies_to_stdin() {
 }
 
 #[test]
+fn option_values_starting_with_hyphen() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("-list", "foo\n");
+    c.args(&["-f", "-list"])
+        .pipe_in("foo\nbar\n")
+        .succeeds()
+        .stdout_only("foo\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-H", "--label", "-in-", "foo"])
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_only("-in-:foo\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["--group-separator", "-=-", "-A0", "x"])
+        .pipe_in("x\ny\nx\n")
+        .succeeds()
+        .stdout_only("x\n-=-\nx\n");
+}
+
+#[test]
 fn line_number_and_byte_offset_prefixes() {
     let (_s, mut c) = ucmd();
     c.args(&["-n", "b"])

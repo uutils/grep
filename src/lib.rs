@@ -595,7 +595,8 @@ pub fn uu_app() -> Command {
                 .value_name("FILE")
                 .value_parser(clap::builder::ValueParser::os_string())
                 .help("take PATTERNS from FILE")
-                .action(ArgAction::Append),
+                .action(ArgAction::Append)
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("ignore_case")
@@ -708,7 +709,8 @@ pub fn uu_app() -> Command {
                 .long("label")
                 .value_name("LABEL")
                 .value_parser(clap::builder::ValueParser::os_string())
-                .help("use LABEL as the standard input file name prefix"),
+                .help("use LABEL as the standard input file name prefix")
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("only_matching")
@@ -780,14 +782,16 @@ pub fn uu_app() -> Command {
                 .long("include")
                 .value_name("GLOB")
                 .help("search only files that match GLOB (a file pattern)")
-                .action(ArgAction::Append),
+                .action(ArgAction::Append)
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("exclude")
                 .long("exclude")
                 .value_name("GLOB")
                 .help("skip files that match GLOB")
-                .action(ArgAction::Append),
+                .action(ArgAction::Append)
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("exclude_from")
@@ -795,14 +799,16 @@ pub fn uu_app() -> Command {
                 .value_name("FILE")
                 .value_parser(clap::builder::ValueParser::os_string())
                 .help("skip files that match any file pattern from FILE")
-                .action(ArgAction::Append),
+                .action(ArgAction::Append)
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("exclude_dir")
                 .long("exclude-dir")
                 .value_name("GLOB")
                 .help("skip directories that match GLOB")
-                .action(ArgAction::Append),
+                .action(ArgAction::Append)
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("files_without_match")
@@ -870,7 +876,8 @@ pub fn uu_app() -> Command {
                 .long("group-separator")
                 .value_name("SEP")
                 .help("print SEP on line between matches with context")
-                .default_value("--"),
+                .default_value("--")
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("no_group_separator")
