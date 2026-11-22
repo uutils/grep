@@ -675,6 +675,11 @@ impl<'a> Searcher<'a> {
         byte_offset: u64,
         line: &[u8],
     ) -> io::Result<()> {
+        let context_positions = if self.config.only_matching && self.config.invert_match {
+            self.matcher.pattern_match_positions(line)
+        } else {
+            Vec::new()
+        };
         if self.session_after_remaining > 0 {
             if !self.session_suppress_normal_output() {
                 self.writer.write_line(
@@ -683,7 +688,7 @@ impl<'a> Searcher<'a> {
                         line_number,
                         byte_offset,
                         is_match: false,
-                        match_positions: &[],
+                        match_positions: &context_positions,
                     },
                     path,
                 )?;
@@ -695,7 +700,7 @@ impl<'a> Searcher<'a> {
             && !self.session_suppress_normal_output()
         {
             self.session_context_buf
-                .push(line, line_number, byte_offset);
+                .push(line, line_number, byte_offset, context_positions);
         }
         Ok(())
     }

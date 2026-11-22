@@ -3,8 +3,8 @@
 // For the full copyright and license information, please view the LICENSE
 // file that was distributed with this source code.
 
-use crate::Config;
 use crate::context_buffer::LineView;
+use crate::Config;
 use std::ffi::OsStr;
 use std::io::{self, BufWriter, StdoutLock, Write};
 use std::path::Path;
@@ -52,8 +52,12 @@ impl<'a> OutputWriter<'a> {
 
     /// Write a matching or context line.
     pub fn write_line(&mut self, view: &LineView<'_>, filename: &Path) -> io::Result<()> {
-        if self.config.only_matching && view.is_match {
-            self.write_only_matching(view, filename)
+        if self.config.only_matching {
+            if view.match_positions.is_empty() {
+                Ok(())
+            } else {
+                self.write_only_matching(view, filename)
+            }
         } else {
             self.write_line_with_matches(view, filename)
         }
@@ -70,7 +74,7 @@ impl<'a> OutputWriter<'a> {
                 filename,
                 view.line_number,
                 view.byte_offset + start as u64,
-                b':',
+                if view.is_match { b':' } else { b'-' },
                 false,
             )?;
 

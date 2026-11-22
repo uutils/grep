@@ -7,7 +7,7 @@ use crate::{Config, RegexMode};
 use memchr::memmem;
 use onig::{RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior, SyntaxOperator};
 use onig_sys::{
-    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
+    OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8, ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS,
 };
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
@@ -61,8 +61,7 @@ impl<'a> Matcher<'a> {
         self.literal_searchers.as_deref()
     }
 
-    /// Decide whether `line` matches and return the positions to highlight.
-    pub fn match_line(&self, line: &[u8]) -> Option<Vec<(usize, usize)>> {
+    fn collect_pattern_positions(&self, line: &[u8]) -> (bool, bool, Vec<(usize, usize)>) {
         let mut any_seen = false;
         let mut any_selected = false;
         let positions: Vec<_> = MatchIter::new(&self.patterns, line)
@@ -81,6 +80,12 @@ impl<'a> Matcher<'a> {
                 start != end
             })
             .collect();
+        (any_seen, any_selected, positions)
+    }
+
+    /// Decide whether `line` matches and return the positions to highlight.
+    pub fn match_line(&self, line: &[u8]) -> Option<Vec<(usize, usize)>> {
+        let (any_seen, any_selected, positions) = self.collect_pattern_positions(line);
 
         let raw_matched = if self.config.line_regexp || self.config.word_regexp {
             // -w / -x are authoritative once matches are filtered. Zero-length
@@ -95,6 +100,14 @@ impl<'a> Matcher<'a> {
         } else {
             None
         }
+    }
+
+    /// Pattern match spans on `line`, ignoring `-v`.
+    ///
+    /// Used to print `-o` matches that land on context lines around an
+    /// inverted match.
+    pub fn pattern_match_positions(&self, line: &[u8]) -> Vec<(usize, usize)> {
+        self.collect_pattern_positions(line).2
     }
 
     /// Cheap match check that doesn't enumerate positions.
