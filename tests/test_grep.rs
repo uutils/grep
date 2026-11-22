@@ -503,6 +503,29 @@ fn perl_regexp_rejects_multiple_patterns() {
 }
 
 #[test]
+fn perl_regexp_duplicate_patterns() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", "-e", "b.r", "-e", "b.r"])
+        .pipe_in("bar\nbaz\n")
+        .succeeds()
+        .stdout_only("bar\n");
+
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("same", "b.r\nb.r\n");
+    c.args(&["-P", "-f", "same"])
+        .pipe_in("bar\nbaz\n")
+        .succeeds()
+        .stdout_only("bar\n");
+
+    // Different patterns are still refused.
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", "-e", "bar", "-e", "baz"])
+        .pipe_in("bar\n")
+        .fails_with_code(2)
+        .stderr_contains("only supports a single pattern");
+}
+
+#[test]
 fn posix_character_classes() {
     let (_s, mut c) = ucmd();
     c.args(&["-E", "[[:digit:]]+"])
