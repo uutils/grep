@@ -235,13 +235,37 @@ impl Cursor<'_> {
     }
 }
 
-/// Returns the byte length of the UTF-8 character starting at `line[start]`,
-/// or 1 if `start` is out of bounds or points to an invalid/incomplete leading byte.
+/// Byte length to advance from `line[start]` after an empty match.
+///
+/// Valid UTF-8 characters use their full width. Invalid sequences follow
+/// Unicode maximal-subpart recovery: consume the longest well-formed leading
+/// prefix (so a 3-byte sequence whose third byte is invalid advances by 2),
+/// and an invalid lead or a failed first continuation advances by 1.
 fn utf8_char_step(line: &[u8], start: usize) -> usize {
-    line.get(start..)
-        .and_then(|chunk| chunk.utf8_chunks().next())
-        .and_then(|c| c.valid().chars().next())
-        .map_or(1, char::len_utf8)
+    let Some((&lead, rest)) = line.get(start..).and_then(<[u8]>::split_first) else {
+        return 1;
+    };
+    if !(0xc2..=0xf4).contains(&lead) {
+        return 1;
+    }
+
+    let (mut lo, mut hi) = match lead {
+        0xe0 => (0xa0, 0xbf),
+        0xed => (0x80, 0x9f),
+        0xf0 => (0x90, 0xbf),
+        0xf4 => (0x80, 0x8f),
+        _ => (0x80, 0xbf),
+    };
+
+    let mut len = 1;
+    for &b in rest.iter().take(lead.leading_ones() as usize - 1) {
+        if !(lo..=hi).contains(&b) {
+            break;
+        }
+        len += 1;
+        (lo, hi) = (0x80, 0xbf);
+    }
+    len
 }
 
 /// Return the literal bytes of `pattern` when a raw byte-for-byte substring
@@ -676,8 +700,55 @@ fn find_bracket_subexpr_end(pattern: &[u8], start: usize, delimiter: u8) -> Opti
 
 #[cfg(test)]
 mod tests {
-    use super::{has_confusing_bracket, plain_literal};
+    use super::{has_confusing_bracket, plain_literal, utf8_char_step};
     use crate::RegexMode;
+
+    #[test]
+    fn utf8_char_step_follows_maximal_subpart_recovery() {
+        // Out of bounds or empty: 1, same as an invalid lead.
+        assert_eq!(utf8_char_step(b"", 0), 1);
+        assert_eq!(utf8_char_step(b"a", 1), 1);
+
+        // ASCII and well-formed multi-byte sequences.
+        assert_eq!(utf8_char_step(b"abc", 0), 1);
+        assert_eq!(utf8_char_step("éx".as_bytes(), 0), 2); // c3 a9
+        assert_eq!(utf8_char_step("€x".as_bytes(), 0), 3); // e2 82 ac
+        assert_eq!(utf8_char_step("🦊x".as_bytes(), 0), 4);
+
+        // Invalid lead bytes, including lone continuations and overlong
+        // 2-byte leads, advance by 1.
+        for lead in [0x00, 0x7f, 0x80, 0xbf, 0xc0, 0xc1, 0xf5, 0xff] {
+            assert_eq!(
+                utf8_char_step(&[lead, 0x80, 0x80, 0x80], 0),
+                1,
+                "lead {lead:#x}"
+            );
+        }
+
+        // A 3-byte sequence whose third byte is not a continuation advances
+        // by 2 (the well-formed 2-byte prefix).
+        assert_eq!(utf8_char_step(&[0xe2, 0x82, 0x20, b'x'], 0), 2);
+
+        // Restricted first-continuation ranges: a byte outside the range
+        // stops at the lead (advance 1); a valid first byte and invalid
+        // second advances 2.
+        // U+0000..U+07FF must not be encoded as 0xe0 (overlong).
+        assert_eq!(utf8_char_step(&[0xe0, 0x80, 0x80], 0), 1);
+        assert_eq!(utf8_char_step(&[0xe0, 0xa0, 0x20], 0), 2);
+        // UTF-16 surrogates (0xed 0xa0..0xbf).
+        assert_eq!(utf8_char_step(&[0xed, 0xa0, 0x80], 0), 1);
+        assert_eq!(utf8_char_step(&[0xed, 0x9f, 0x20], 0), 2);
+        // 4-byte overlong (0xf0 0x80..0x8f) and above U+10FFFF (0xf4 0x90..).
+        assert_eq!(utf8_char_step(&[0xf0, 0x80, 0x80, 0x80], 0), 1);
+        assert_eq!(utf8_char_step(&[0xf0, 0x90, 0x20, 0x80], 0), 2);
+        assert_eq!(utf8_char_step(&[0xf4, 0x90, 0x80, 0x80], 0), 1);
+        assert_eq!(utf8_char_step(&[0xf4, 0x80, 0x20, 0x80], 0), 2);
+
+        // An incomplete but well-formed prefix at the end of the buffer
+        // still consumes that prefix.
+        assert_eq!(utf8_char_step(&[0xe2, 0x82], 0), 2);
+        assert_eq!(utf8_char_step(&[0xe2], 0), 1);
+    }
 
     fn lit(p: &str, ic: bool, mode: RegexMode) -> Option<Vec<u8>> {
         plain_literal(p, ic, mode)
