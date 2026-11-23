@@ -2422,3 +2422,75 @@ fn ere_empty_interval_is_error() {
         .fails_with_code(2)
         .no_stdout();
 }
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_pattern_file_name_and_label() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    // --label is purely a display prefix and works across all Unix platforms including macOS.
+    let (_s, mut c) = ucmd();
+    c.arg("-H")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_is_bytes(b"in\xfe:foo\n");
+
+    let (_s, mut c) = ucmd();
+    c.arg("-H")
+        .arg("-Z")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_is_bytes(b"in\xfe\0foo\n");
+
+    let (_s, mut c) = ucmd();
+    c.arg("-l")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_is_bytes(b"in\xfe\n");
+
+    let (_s, mut c) = ucmd();
+    c.arg("-l")
+        .arg("-Z")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_is_bytes(b"in\xfe\0");
+
+    let (_s, mut c) = ucmd();
+    c.arg("-L")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("bar")
+        .pipe_in("foo\n")
+        .fails_with_code(1)
+        .stdout_is_bytes(b"in\xfe\n");
+
+    // Creating files with non-UTF-8 names is rejected by Darwin/macOS APFS with EILSEQ (errno 92).
+    // On Linux and other Unix filesystems, arbitrary byte file names are fully supported.
+    if !cfg!(target_os = "macos") {
+        let name = OsStr::from_bytes(b"list\xfe");
+        let (scene, mut c) = ucmd();
+        std::fs::write(scene.fixtures.plus(name), "foo\n").unwrap();
+        c.arg("-f")
+            .arg(name)
+            .pipe_in("foo\nbar\n")
+            .succeeds()
+            .stdout_only("foo\n");
+
+        let excl_name = OsStr::from_bytes(b"excl\xfe");
+        let (scene, mut c) = ucmd();
+        std::fs::write(scene.fixtures.plus(excl_name), "*.txt\n").unwrap();
+        scene.fixtures.write("match.txt", "foo\n");
+        c.args(&["-r", "foo"])
+            .arg(OsStr::from_bytes(b"--exclude-from=excl\xfe"))
+            .fails_with_code(1)
+            .no_stdout();
+    }
+}

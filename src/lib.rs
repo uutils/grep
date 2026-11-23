@@ -111,7 +111,7 @@ pub struct Config<'a> {
     pub follow_symlinks: bool,
     pub file_globs: GlobSet,
     pub exclude_dir_globs: GlobSet,
-    pub label: &'a str,
+    pub label: &'a OsStr,
     #[cfg(windows)]
     pub strip_cr: bool,
     pub binary_mode: BinaryMode,
@@ -157,15 +157,15 @@ fn read_error(label: impl std::fmt::Display, err: &std::io::Error) -> Box<dyn UE
 /// Read a file named by `-f` or `--exclude-from`, where `-` means standard
 /// input. An unreadable file is mapped to the usage error here so both callers
 /// can simply use `?`.
-fn read_pattern_file(path: &str) -> UResult<String> {
+fn read_pattern_file(path: &OsStr) -> UResult<String> {
     let (label, contents) = if path == "-" {
         let mut buf = String::new();
         (
-            "(standard input)",
+            std::borrow::Cow::Borrowed("(standard input)"),
             std::io::stdin().read_to_string(&mut buf).map(|_| buf),
         )
     } else {
-        (path, std::fs::read_to_string(path))
+        (path.to_string_lossy(), std::fs::read_to_string(path))
     };
     contents.map_err(|err| read_error(label, &err))
 }
@@ -191,7 +191,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let perl_regexp = matches.get_flag("perl_regexp");
     let regexp = matches.get_many::<String>("regexp").unwrap_or_default();
     let file_pattern = matches
-        .get_many::<String>("file_pattern")
+        .get_many::<OsString>("file_pattern")
         .unwrap_or_default();
     let ignore_case = matches.get_flag("ignore_case");
     let word_regexp = matches.get_flag("word_regexp");
@@ -207,8 +207,8 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let with_filename = matches.get_flag("with_filename");
     let no_filename = matches.get_flag("no_filename");
     let label = matches
-        .get_one::<String>("label")
-        .map_or("(standard input)", |s| s.as_str());
+        .get_one::<OsString>("label")
+        .map_or_else(|| OsStr::new("(standard input)"), |s| s.as_os_str());
     let only_matching = matches.get_flag("only_matching");
     let quiet = matches.get_flag("quiet");
     let binary_files = matches
@@ -376,7 +376,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         }
     }
     if let (Some(paths), Some(indices)) = (
-        matches.get_many::<String>("exclude_from"),
+        matches.get_many::<OsString>("exclude_from"),
         matches.indices_of("exclude_from"),
     ) {
         for (i, path) in indices.zip(paths) {
@@ -593,6 +593,7 @@ pub fn uu_app() -> Command {
                 .short('f')
                 .long("file")
                 .value_name("FILE")
+                .value_parser(clap::builder::ValueParser::os_string())
                 .help("take PATTERNS from FILE")
                 .action(ArgAction::Append),
         )
@@ -706,6 +707,7 @@ pub fn uu_app() -> Command {
             Arg::new("label")
                 .long("label")
                 .value_name("LABEL")
+                .value_parser(clap::builder::ValueParser::os_string())
                 .help("use LABEL as the standard input file name prefix"),
         )
         .arg(
@@ -791,6 +793,7 @@ pub fn uu_app() -> Command {
             Arg::new("exclude_from")
                 .long("exclude-from")
                 .value_name("FILE")
+                .value_parser(clap::builder::ValueParser::os_string())
                 .help("skip files that match any file pattern from FILE")
                 .action(ArgAction::Append),
         )
