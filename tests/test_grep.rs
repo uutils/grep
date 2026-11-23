@@ -1172,59 +1172,59 @@ fn option_values_starting_with_hyphen() {
     scene.fixtures.write("tree/-tmp/hidden.txt", "foo\n");
     scene.fixtures.write("-excludes", "-odd.txt\n");
 
-    for include in [&["--include=-odd.txt"][..], &["--include", "-odd.txt"][..]] {
+    let cases: &[(&[&str], &[&str], &[&str])] = &[
+        (
+            &["--include=-odd.txt"],
+            &["-odd.txt"],
+            &["keep.txt", "hidden.txt"],
+        ),
+        (
+            &["--include", "-odd.txt"],
+            &["-odd.txt"],
+            &["keep.txt", "hidden.txt"],
+        ),
+        (
+            &["--exclude=-odd.txt"],
+            &["keep.txt", "hidden.txt"],
+            &["-odd.txt"],
+        ),
+        (
+            &["--exclude", "-odd.txt"],
+            &["keep.txt", "hidden.txt"],
+            &["-odd.txt"],
+        ),
+        (
+            &["--exclude-dir=-tmp"],
+            &["keep.txt", "-odd.txt"],
+            &["hidden.txt"],
+        ),
+        (
+            &["--exclude-dir", "-tmp"],
+            &["keep.txt", "-odd.txt"],
+            &["hidden.txt"],
+        ),
+        (
+            &["--exclude-from=-excludes"],
+            &["keep.txt", "hidden.txt"],
+            &["-odd.txt"],
+        ),
+        (
+            &["--exclude-from", "-excludes"],
+            &["keep.txt", "hidden.txt"],
+            &["-odd.txt"],
+        ),
+    ];
+    for (opt, expected, unexpected) in cases {
         let mut args = vec!["-r", "-l"];
-        args.extend_from_slice(include);
+        args.extend_from_slice(opt);
         args.extend_from_slice(&["foo", "tree"]);
-        scene
-            .cmd(env!("CARGO_BIN_EXE_grep"))
-            .args(&args)
-            .succeeds()
-            .stdout_contains("-odd.txt")
-            .stdout_does_not_contain("keep.txt")
-            .stdout_does_not_contain("hidden.txt");
-    }
-
-    for exclude in [&["--exclude=-odd.txt"][..], &["--exclude", "-odd.txt"][..]] {
-        let mut args = vec!["-r", "-l"];
-        args.extend_from_slice(exclude);
-        args.extend_from_slice(&["foo", "tree"]);
-        scene
-            .cmd(env!("CARGO_BIN_EXE_grep"))
-            .args(&args)
-            .succeeds()
-            .stdout_contains("keep.txt")
-            .stdout_contains("hidden.txt")
-            .stdout_does_not_contain("-odd.txt");
-    }
-
-    for exclude_dir in [&["--exclude-dir=-tmp"][..], &["--exclude-dir", "-tmp"][..]] {
-        let mut args = vec!["-r", "-l"];
-        args.extend_from_slice(exclude_dir);
-        args.extend_from_slice(&["foo", "tree"]);
-        scene
-            .cmd(env!("CARGO_BIN_EXE_grep"))
-            .args(&args)
-            .succeeds()
-            .stdout_contains("keep.txt")
-            .stdout_contains("-odd.txt")
-            .stdout_does_not_contain("hidden.txt");
-    }
-
-    for exclude_from in [
-        &["--exclude-from=-excludes"][..],
-        &["--exclude-from", "-excludes"][..],
-    ] {
-        let mut args = vec!["-r", "-l"];
-        args.extend_from_slice(exclude_from);
-        args.extend_from_slice(&["foo", "tree"]);
-        scene
-            .cmd(env!("CARGO_BIN_EXE_grep"))
-            .args(&args)
-            .succeeds()
-            .stdout_contains("keep.txt")
-            .stdout_contains("hidden.txt")
-            .stdout_does_not_contain("-odd.txt");
+        let result = scene.cmd(env!("CARGO_BIN_EXE_grep")).args(&args).succeeds();
+        for s in *expected {
+            result.stdout_contains(*s);
+        }
+        for s in *unexpected {
+            result.stdout_does_not_contain(*s);
+        }
     }
 }
 
