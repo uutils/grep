@@ -345,7 +345,11 @@ impl<'a> Searcher<'a> {
 
         let mut count: u64 = 0;
         let mut matched = false;
-        'outer: while let Some((chunk, chunk_off)) = lb.read_chunk(reader)? {
+        let mut read_error = None;
+        'outer: while let Some((chunk, chunk_off)) = lb.read_chunk(reader).unwrap_or_else(|err| {
+            read_error = Some(err);
+            None
+        }) {
             let mut p = 0;
             while p < chunk.len() {
                 let Some(rel) = leftmost_match(finders, &chunk[p..]) else {
@@ -366,6 +370,9 @@ impl<'a> Searcher<'a> {
         }
 
         self.session_match_count = count;
+        if let Some(err) = read_error {
+            self.report_read_error(path, &err);
+        }
 
         // `-l`/`-L` take precedence over `-c`, matching the line-at-a-time path.
         if self.config.quiet {
@@ -519,8 +526,12 @@ impl<'a> Searcher<'a> {
         lb.reset();
 
         let mut line_number: u64 = 0;
+        let mut read_error = None;
 
-        while let Some((line, line_start)) = lb.read_line(reader)? {
+        while let Some((line, line_start)) = lb.read_line(reader).unwrap_or_else(|err| {
+            read_error = Some(err);
+            None
+        }) {
             line_number += 1;
             // Offset of the next line. A final line without a terminator makes
             // this one byte past the input, which reads the same as its end.
@@ -568,7 +579,18 @@ impl<'a> Searcher<'a> {
             }
         }
 
+        if let Some(err) = read_error {
+            self.report_read_error(path, &err);
+        }
         self.session_finalize(path)
+    }
+
+    /// A read error ends the file like end of input does: it is reported right
+    /// away, and the lines read so far still count, so `-c` prints the count
+    /// and `-L` the name, as GNU grep does.
+    fn report_read_error(&mut self, path: &Path, err: &io::Error) {
+        self.had_error = true;
+        self.writer.report_io_error(path.as_os_str(), err);
     }
 
     /// Mark the file as binary when `predicate` returns true.

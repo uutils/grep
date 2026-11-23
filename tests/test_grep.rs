@@ -1912,6 +1912,32 @@ fn directories_read_errors() {
         .stderr_contains("tree");
 }
 
+// A directory opens but fails to read. GNU still prints its count for `-c`
+// and its name for `-L`. (On Windows a directory does not open at all.)
+#[cfg(unix)]
+#[test]
+fn count_and_files_without_match_list_unreadable_input() {
+    let (scene, _) = ucmd();
+    scene.fixtures.mkdir("dir");
+    scene.fixtures.write("a.txt", "foo\n");
+
+    // `foo` takes the literal fast path, `fo*` the line-at-a-time one.
+    for pattern in ["foo", "fo*"] {
+        for (option, stdout) in [
+            ("-c", "dir:0\na.txt:1\n"),
+            ("-cv", "dir:0\na.txt:0\n"),
+            ("-L", "dir\n"),
+            ("-l", "a.txt\n"),
+        ] {
+            let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+            c.args(&[option, pattern, "dir", "a.txt"])
+                .fails_with_code(2)
+                .stdout_is(stdout)
+                .stderr_is("grep: dir: Is a directory\n");
+        }
+    }
+}
+
 #[test]
 fn directories_recurse_equivalent_to_dash_r() {
     let (scene, mut c) = ucmd();
