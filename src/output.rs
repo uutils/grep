@@ -164,10 +164,21 @@ impl<'a> OutputWriter<'a> {
     }
 
     fn write_filename_and_separator(&mut self, filename: &Path, sep_char: u8) -> io::Result<()> {
-        self.write_colored_fmt(
-            self.config.color_config.filename,
-            format_args!("{}", filename.display()),
-        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            self.write_colored_bytes(
+                self.config.color_config.filename,
+                filename.as_os_str().as_bytes(),
+            )?;
+        }
+        #[cfg(not(unix))]
+        {
+            self.write_colored_fmt(
+                self.config.color_config.filename,
+                format_args!("{}", filename.display()),
+            )?;
+        }
         if self.config.null_separator {
             self.out.write_all(b"\0")
         } else {
@@ -187,10 +198,21 @@ impl<'a> OutputWriter<'a> {
 
     /// Write filename for `-l` / `-L` mode.
     pub fn write_filename(&mut self, path: &Path) -> io::Result<()> {
-        self.write_colored_fmt(
-            self.config.color_config.filename,
-            format_args!("{}", path.display()),
-        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            self.write_colored_bytes(
+                self.config.color_config.filename,
+                path.as_os_str().as_bytes(),
+            )?;
+        }
+        #[cfg(not(unix))]
+        {
+            self.write_colored_fmt(
+                self.config.color_config.filename,
+                format_args!("{}", path.display()),
+            )?;
+        }
         self.out.write_all(if self.config.null_separator {
             b"\0"
         } else {

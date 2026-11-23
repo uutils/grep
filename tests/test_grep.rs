@@ -503,6 +503,29 @@ fn perl_regexp_rejects_multiple_patterns() {
 }
 
 #[test]
+fn perl_regexp_duplicate_patterns() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", "-e", "b.r", "-e", "b.r"])
+        .pipe_in("bar\nbaz\n")
+        .succeeds()
+        .stdout_only("bar\n");
+
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("same", "b.r\nb.r\n");
+    c.args(&["-P", "-f", "same"])
+        .pipe_in("bar\nbaz\n")
+        .succeeds()
+        .stdout_only("bar\n");
+
+    // Different patterns are still refused.
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", "-e", "bar", "-e", "baz"])
+        .pipe_in("bar\n")
+        .fails_with_code(2)
+        .stderr_contains("only supports a single pattern");
+}
+
+#[test]
 fn posix_character_classes() {
     let (_s, mut c) = ucmd();
     c.args(&["-E", "[[:digit:]]+"])
@@ -2435,13 +2458,13 @@ fn anchors_still_match_only_at_line_edges_around_invalid_utf8() {
     c.env("LC_ALL", "C.UTF-8")
         .args(&["-a", "-c", "^b"])
         .pipe_in(&b"a\xffb\n"[..])
-        .fails()
+        .fails_with_code(1)
         .stdout_only("0\n");
     let (_s, mut c) = ucmd();
     c.env("LC_ALL", "C.UTF-8")
         .args(&["-a", "-c", "a$"])
         .pipe_in(&b"a\xffb\n"[..])
-        .fails()
+        .fails_with_code(1)
         .stdout_only("0\n");
     let (_s, mut c) = ucmd();
     c.env("LC_ALL", "C.UTF-8")
@@ -2483,4 +2506,110 @@ fn byte_locales_match_non_ascii_bytes() {
         .succeeds()
         .stdout_is("a\n")
         .stderr_contains("binary file matches");
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_pattern_file_name_and_label() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    // --label is purely a display prefix and works across all Unix platforms including macOS.
+    let (_s, mut c) = ucmd();
+    c.arg("-H")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_is_bytes(b"in\xfe:foo\n");
+
+    let (_s, mut c) = ucmd();
+    c.arg("-H")
+        .arg("-Z")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_is_bytes(b"in\xfe\0foo\n");
+
+    let (_s, mut c) = ucmd();
+    c.arg("-l")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_is_bytes(b"in\xfe\n");
+
+    let (_s, mut c) = ucmd();
+    c.arg("-l")
+        .arg("-Z")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_is_bytes(b"in\xfe\0");
+
+    let (_s, mut c) = ucmd();
+    c.arg("-L")
+        .arg(OsStr::from_bytes(b"--label=in\xfe"))
+        .arg("bar")
+        .pipe_in("foo\n")
+        .fails_with_code(1)
+        .stdout_is_bytes(b"in\xfe\n");
+
+    // Creating files with non-UTF-8 names is rejected by Darwin/macOS APFS with EILSEQ (errno 92).
+    // On Linux and other Unix filesystems, arbitrary byte file names are fully supported.
+    if !cfg!(target_os = "macos") {
+        let name = OsStr::from_bytes(b"list\xfe");
+        let (scene, mut c) = ucmd();
+        std::fs::write(scene.fixtures.plus(name), "foo\n").unwrap();
+        c.arg("-f")
+            .arg(name)
+            .pipe_in("foo\nbar\n")
+            .succeeds()
+            .stdout_only("foo\n");
+
+        let excl_name = OsStr::from_bytes(b"excl\xfe");
+        let (scene, mut c) = ucmd();
+        std::fs::write(scene.fixtures.plus(excl_name), "*.txt\n").unwrap();
+        scene.fixtures.write("match.txt", "foo\n");
+        c.args(&["-r", "foo"])
+            .arg(OsStr::from_bytes(b"--exclude-from=excl\xfe"))
+            .fails_with_code(1)
+            .no_stdout();
+    }
+}
+
+#[test]
+fn only_matching_empty_match_does_not_split_utf8() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-ob", r"-e\w*"])
+        .pipe_in("run \u{1F635}rm now\n")
+        .succeeds()
+        .stdout_only("0:run\n8:rm\n11:now\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-o", "-e[^、]*"])
+        .pipe_in("a、b\n")
+        .succeeds()
+        .stdout_only("a\nb\n");
+
+    // Invalid leading byte after an empty match: step falls back to 1,
+    // so the next search starts at the following byte (offset 3).
+    let (_s, mut c) = ucmd();
+    c.args(&["-a", "-ob", "-ea*"])
+        .pipe_in(&b"xa\xffa\n"[..])
+        .succeeds()
+        .stdout_only("1:a\n3:a\n");
+
+    // --color must also skip the whole character, not highlight a torn tail.
+    let red = "\x1b[01;31m\x1b[K";
+    let reset = "\x1b[m\x1b[K";
+    let (_s, mut c) = ucmd();
+    c.args(&["--color=always", r"-e\w*"])
+        .pipe_in("run \u{1F635}rm now\n")
+        .succeeds()
+        .stdout_only(format!(
+            "{red}run{reset} \u{1F635}{red}rm{reset} {red}now{reset}\n"
+        ));
 }
