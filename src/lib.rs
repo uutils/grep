@@ -544,6 +544,8 @@ pub fn uu_app() -> Command {
         // options take the last); make clap replace rather than error. Args
         // with ArgAction::Append (e.g. -e/-f/--include) still accumulate.
         .args_override_self(true)
+        // Like getopt_long, accept any unambiguous prefix of a long option.
+        .infer_long_args(true)
         .after_help(
             "When FILE is '-', read standard input.  If no FILE is given, read standard \
              input, but with -r, recursively search the working directory instead.  With \
@@ -917,23 +919,6 @@ pub fn uu_app() -> Command {
 /// Note that `-a12b` means `-a -C 12 -b`.
 fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
     const SHORT_OPTS_WITH_VALUE: &[u8] = b"efmABCDd";
-    const LONG_OPTS_WITH_VALUE: &[&[u8]] = &[
-        b"regexp",
-        b"file",
-        b"max-count",
-        b"label",
-        b"after-context",
-        b"before-context",
-        b"context",
-        b"devices",
-        b"directories",
-        b"binary-files",
-        b"include",
-        b"exclude",
-        b"exclude-from",
-        b"exclude-dir",
-        b"group-separator",
-    ];
 
     // Rebuild a single option argument out of `prefix` and `bytes`.
     fn option(prefix: &str, bytes: &[u8]) -> OsString {
@@ -945,6 +930,8 @@ fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
         unsafe { OsString::from_encoded_bytes_unchecked(buf) }
     }
 
+    // Only built when a long option shows up.
+    let cmd = std::cell::LazyCell::new(uu_app);
     let mut out: Vec<OsString> = args.collect();
     let mut i = 1; // argv[0] is the executable name
 
@@ -963,9 +950,9 @@ fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
             break;
         }
 
-        // Skip --long options.
+        // Skip --long options, and the next argument if it is their value.
         if let Some(name) = arg.strip_prefix(b"-") {
-            i += 1 + usize::from(LONG_OPTS_WITH_VALUE.contains(&name));
+            i += 1 + usize::from(long_option_takes_next_arg(&cmd, name));
             continue;
         }
 
@@ -1016,6 +1003,31 @@ fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
     }
 
     out
+}
+
+/// Whether the long option `name` (the part after `--`) reads its value from
+/// the next argument. `name` may be abbreviated the way clap's
+/// `infer_long_args` resolves it: an exact name wins, otherwise the prefix must
+/// select a single option. Anything clap will reject is reported as `false`.
+fn long_option_takes_next_arg(cmd: &Command, name: &[u8]) -> bool {
+    if name.contains(&b'=') {
+        return false;
+    }
+    fn names(arg: &Arg) -> impl Iterator<Item = &[u8]> {
+        let aliases = arg.get_all_aliases().unwrap_or_default();
+        arg.get_long().into_iter().chain(aliases).map(str::as_bytes)
+    }
+    let exact = cmd
+        .get_arguments()
+        .find(|arg| names(arg).any(|n| n == name));
+    let mut prefixed = cmd
+        .get_arguments()
+        .filter(|arg| names(arg).any(|n| n.starts_with(name)));
+    let arg = match (exact, prefixed.next(), prefixed.next()) {
+        (Some(arg), _, _) | (None, Some(arg), None) => arg,
+        _ => return false,
+    };
+    arg.get_action().takes_values() && !arg.is_require_equals_set()
 }
 
 impl Default for GlobSet {

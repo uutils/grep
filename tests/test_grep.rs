@@ -1340,6 +1340,41 @@ fn num_shorthand_does_not_capture_option_values() {
 }
 
 #[test]
+fn abbreviated_long_options() {
+    // (args, input, expected stdout)
+    let cases: &[(&[&str], &str, &str)] = &[
+        (&["--cou", "a"], "a\nb\na\n", "2\n"),
+        (&["--reg=b"], "a\nb\n", "b\n"),
+        (&["--max", "1", "a"], "a\na\n", "a\n"),
+        (&["--ignore", "A"], "a\nb\n", "a\n"),
+        (&["--colo=never", "a"], "a\nb\n", "a\n"),
+        // An abbreviated value option still takes `-7` as its value.
+        (&["--reg", "-7"], "-7\nx\n", "-7\n"),
+        (&["--binary-f", "text", "a"], "a\nb\n", "a\n"),
+        // An exact name wins over a longer option it is a prefix of, so
+        // `--binary` is the flag and `-1` is the context shorthand.
+        (&["--binary", "-1", "b"], "a\nb\nc\n", "a\nb\nc\n"),
+    ];
+    for (args, input, expected) in cases {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .pipe_in(*input)
+            .succeeds()
+            .stdout_only(*expected);
+    }
+
+    // An ambiguous prefix stays a usage error.
+    for prefix in ["--co", "--fi"] {
+        let (_s, mut c) = ucmd();
+        c.args(&[prefix, "a"])
+            .ignore_stdin_write_error()
+            .pipe_in("a\n")
+            .fails_with_code(2)
+            .no_stdout();
+    }
+}
+
+#[test]
 fn num_shorthand_allows_non_ascii_attached_values() {
     // A non-ASCII attached value is legitimate: `-1e🙂` is `-C 1 -e 🙂`.
     let ok = |args: &[&str]| {
