@@ -2405,23 +2405,28 @@ fn dot_and_negated_matchers_skip_invalid_utf8() {
     // A byte that does not start a valid character is not a character, so
     // `.`, `\S` and `-x '.*'` must not step over it.
     let input = &b"ok\nz\xffz\nz\xc0\x80z\nz\xe4\xb8\xadz\n"[..];
-    let cases: &[(&[&str], &str)] = &[
-        (&["-a", "-c", "z.z"], "1\n"),
-        (&["-a", "-c", "-E", r"z\Sz"], "1\n"),
-        (&["-a", "-c", "-E", "z[^a]z"], "1\n"),
-        (&["-a", "-v", "-x", ".*"], "z\u{fffd}z\n"),
+    let cases: &[&[&str]] = &[
+        &["-a", "-c", "z.z"],
+        &["-a", "-c", "-E", r"z\Sz"],
+        &["-a", "-c", "-E", "z[^a]z"],
     ];
-    for (args, expected) in cases {
+    for args in cases {
         let (_s, mut c) = ucmd();
-        c.env("LC_ALL", "C.UTF-8").args(args).pipe_in(input);
-        if args.contains(&"-v") {
-            // The two malformed lines are kept; compare raw bytes.
-            c.succeeds()
-                .stdout_only_bytes(&b"z\xffz\nz\xc0\x80z\n"[..]);
-        } else {
-            c.succeeds().stdout_only(*expected);
-        }
+        c.env("LC_ALL", "C.UTF-8")
+            .args(args)
+            .pipe_in(input)
+            .succeeds()
+            .stdout_only("1\n");
     }
+
+    // A pattern file keeps Windows wildcard expansion from rewriting `.*`.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("patterns", ".*\n");
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-v", "-x", "-f", "patterns"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only_bytes(&b"z\xffz\nz\xc0\x80z\n"[..]);
 }
 
 #[test]

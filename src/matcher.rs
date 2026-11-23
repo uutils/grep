@@ -222,7 +222,9 @@ impl Cursor<'_> {
             self.pending = None;
             return;
         }
-        let Some((start, leftmost_end)) = self.pattern.search_leftmost(self.line, self.segments, self.offset)
+        let Some((start, leftmost_end)) =
+            self.pattern
+                .search_leftmost(self.line, self.segments, self.offset)
         else {
             self.pending = None;
             return;
@@ -426,16 +428,20 @@ impl CompiledPattern {
     fn is_match(&self, line: &[u8]) -> bool {
         let segments = utf8_segments(line);
         let whole = [(0, line.len())];
-        segments.as_deref().unwrap_or(&whole).iter().any(|&(seg_start, seg_end)| {
-            self.leftmost
-                .search(
-                    &line[seg_start..seg_end],
-                    0,
-                    None,
-                    segment_options(line, seg_start, seg_end),
-                )
-                .is_some()
-        })
+        segments
+            .as_deref()
+            .unwrap_or(&whole)
+            .iter()
+            .any(|&(seg_start, seg_end)| {
+                self.leftmost
+                    .search(
+                        &line[seg_start..seg_end],
+                        0,
+                        None,
+                        segment_options(line, seg_start, seg_end),
+                    )
+                    .is_some()
+            })
     }
 }
 
