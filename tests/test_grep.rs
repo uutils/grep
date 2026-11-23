@@ -2432,18 +2432,55 @@ fn dot_and_negated_matchers_skip_invalid_utf8() {
 #[test]
 fn anchors_still_match_only_at_line_edges_around_invalid_utf8() {
     let (_s, mut c) = ucmd();
-    c.args(&["-a", "-c", "^b"])
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-c", "^b"])
         .pipe_in(&b"a\xffb\n"[..])
         .fails()
         .stdout_only("0\n");
     let (_s, mut c) = ucmd();
-    c.args(&["-a", "-c", "a$"])
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-c", "a$"])
         .pipe_in(&b"a\xffb\n"[..])
         .fails()
         .stdout_only("0\n");
     let (_s, mut c) = ucmd();
-    c.args(&["-a", "-o", "^a.*"])
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-o", "^a.*"])
         .pipe_in(&b"a\xffb\nab\n"[..])
         .succeeds()
         .stdout_only("a\nab\n");
+}
+
+#[test]
+fn byte_locales_match_non_ascii_bytes() {
+    let input = &b"a\nz\xffz\nb\n"[..];
+    for locale in ["C", "POSIX"] {
+        let (_scene, mut cmd) = ucmd();
+        cmd.env("LC_ALL", locale)
+            .env("LC_CTYPE", "C.UTF-8")
+            .env("LANG", "C.UTF-8")
+            .args(&["-a", "-c", "z.z"])
+            .pipe_in(input)
+            .succeeds()
+            .stdout_only("1\n");
+
+        let (_scene, mut cmd) = ucmd();
+        cmd.env("LC_ALL", "")
+            .env("LC_CTYPE", locale)
+            .env("LANG", "C.UTF-8")
+            .args(&["-a", "-o", "z.z"])
+            .pipe_in(input)
+            .succeeds()
+            .stdout_only_bytes(&b"z\xffz\n"[..]);
+    }
+
+    let (scene, mut cmd) = ucmd();
+    scene.fixtures.write_bytes("binary-input", b"a\n\xff\nb\n");
+    cmd.env("LC_ALL", "")
+        .env("LC_CTYPE", "")
+        .env("LANG", "C")
+        .args(&[".", "binary-input"])
+        .succeeds()
+        .stdout_is("a\n")
+        .stderr_contains("binary file matches");
 }

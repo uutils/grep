@@ -7,7 +7,8 @@ use crate::{Config, RegexMode};
 use memchr::memmem;
 use onig::{RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior, SyntaxOperator};
 use onig_sys::{
-    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
+    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncoding,
+    OnigEncodingASCII, OnigEncodingUTF8,
 };
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
@@ -18,6 +19,7 @@ static ONIG_NEW_MUTEX: Mutex<()> = Mutex::new(());
 
 pub struct Matcher<'a> {
     config: &'a Config<'a>,
+    byte_locale: bool,
     patterns: Vec<CompiledPattern>,
     /// One substring searcher per pattern, present only when *every* pattern is
     /// a plain literal that a raw byte search resolves exactly (see
@@ -29,9 +31,15 @@ pub struct Matcher<'a> {
 
 impl<'a> Matcher<'a> {
     pub fn compile(config: &'a Config<'a>) -> UResult<Self> {
+        // C and POSIX use single-byte characters. Keep UTF-8 matching for other locales.
+        let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+            .into_iter()
+            .find_map(|name| std::env::var_os(name).filter(|value| !value.is_empty()));
+        let byte_locale = locale.is_some_and(|value| value == "C" || value == "POSIX");
+        let encoding = regex_encoding(byte_locale);
         let mut patterns = Vec::with_capacity(config.patterns.len());
         for raw in config.patterns {
-            patterns.push(CompiledPattern::compile(raw, config)?);
+            patterns.push(CompiledPattern::compile(raw, config, encoding)?);
         }
 
         // If we can reduce the whole pattern set to literal needles, keep a
@@ -49,6 +57,7 @@ impl<'a> Matcher<'a> {
 
         Ok(Self {
             config,
+            byte_locale,
             patterns,
             literal_searchers,
         })
@@ -65,7 +74,7 @@ impl<'a> Matcher<'a> {
     pub fn match_line(&self, line: &[u8]) -> Option<Vec<(usize, usize)>> {
         let mut any_seen = false;
         let mut any_selected = false;
-        let segments = utf8_segments(line);
+        let segments = self.segments(line);
         let positions: Vec<_> = MatchIter::new(&self.patterns, line, segments.as_deref())
             .filter(|&(start, end)| {
                 any_seen = true;
@@ -74,7 +83,7 @@ impl<'a> Matcher<'a> {
                     return false;
                 }
                 // Drop matches that aren't word matches if `-w` was requested.
-                if self.config.word_regexp && !Self::is_word_match(line, start, end) {
+                if self.config.word_regexp && !self.is_word_match(line, start, end) {
                     return false;
                 }
                 any_selected = true;
@@ -104,20 +113,33 @@ impl<'a> Matcher<'a> {
         let matched = if self.config.line_regexp || self.config.word_regexp {
             self.match_line(line).is_some()
         } else {
-            let raw_matched = self.patterns.iter().any(|p| p.is_match(line));
+            let segments = self.segments(line);
+            let raw_matched = self
+                .patterns
+                .iter()
+                .any(|p| p.is_match(line, segments.as_deref()));
             raw_matched != self.config.invert_match
         };
         matched.then(Vec::new)
     }
 
+    fn segments(&self, line: &[u8]) -> Option<Vec<(usize, usize)>> {
+        if self.byte_locale {
+            None
+        } else {
+            utf8_segments(line)
+        }
+    }
+
     /// Word-boundary check `-w`.
     /// NOTE that `-w` does not check both sides, unlike `\b` in a regex.
     /// Start/End-of-line count as non-words.
-    fn is_word_match(line: &[u8], start: usize, end: usize) -> bool {
-        // SAFETY: This code uses OnigEncodingType such that it can support other types of encodings in the future.
+    fn is_word_match(&self, line: &[u8], start: usize, end: usize) -> bool {
+        // SAFETY: Both built-in encodings supply these callbacks.
         unsafe {
-            let mbc_to_code = OnigEncodingUTF8.mbc_to_code.unwrap_unchecked();
-            let is_code_ctype = OnigEncodingUTF8.is_code_ctype.unwrap_unchecked();
+            let encoding = &*regex_encoding(self.byte_locale);
+            let mbc_to_code = encoding.mbc_to_code.unwrap_unchecked();
+            let is_code_ctype = encoding.is_code_ctype.unwrap_unchecked();
             let line_end = line.as_ptr().add(line.len());
 
             if end < line.len() {
@@ -128,7 +150,7 @@ impl<'a> Matcher<'a> {
             }
 
             if start > 0 {
-                let left_adjust = OnigEncodingUTF8.left_adjust_char_head.unwrap_unchecked();
+                let left_adjust = encoding.left_adjust_char_head.unwrap_unchecked();
                 let head = left_adjust(line.as_ptr(), line.as_ptr().add(start - 1));
                 let cp = mbc_to_code(head, line_end);
                 if is_code_ctype(cp, OnigEncCtype_ONIGENC_CTYPE_WORD) != 0 {
@@ -138,6 +160,14 @@ impl<'a> Matcher<'a> {
 
             true
         }
+    }
+}
+
+fn regex_encoding(byte_locale: bool) -> OnigEncoding {
+    if byte_locale {
+        &raw mut OnigEncodingASCII
+    } else {
+        &raw mut OnigEncodingUTF8
     }
 }
 
@@ -269,7 +299,7 @@ struct CompiledPattern {
 }
 
 impl CompiledPattern {
-    fn compile(pattern: &str, config: &Config) -> UResult<Self> {
+    fn compile(pattern: &str, config: &Config, encoding: OnigEncoding) -> UResult<Self> {
         let mut syntax = *match config.regex_mode {
             RegexMode::Fixed => Syntax::asis(),
             RegexMode::Basic => Syntax::grep(),
@@ -345,8 +375,9 @@ impl CompiledPattern {
             pattern: &str,
             syntax: &Syntax,
             options: RegexOptions,
+            encoding: OnigEncoding,
         ) -> UResult<OnigRegex> {
-            OnigRegex::compile(pattern, syntax, options).map_err(|err| {
+            OnigRegex::compile(pattern, syntax, options, encoding).map_err(|err| {
                 // A reversed range like `[b-a]` is ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS.
                 // GNU grep reports it simply as "Invalid range end" (no pattern
                 // echoed), so translate this code to match its diagnostic.
@@ -358,11 +389,12 @@ impl CompiledPattern {
             })
         }
 
-        let leftmost = compile_with(pattern, &syntax, options)?;
+        let leftmost = compile_with(pattern, &syntax, options, encoding)?;
         let longest_anchored = compile_with(
             pattern,
             &syntax,
             options | RegexOptions::REGEX_OPTION_FIND_LONGEST,
+            encoding,
         )?;
         Ok(Self {
             leftmost,
@@ -425,23 +457,23 @@ impl CompiledPattern {
     }
 
     /// True if any match exists in `line` (including zero-length).
-    fn is_match(&self, line: &[u8]) -> bool {
-        let segments = utf8_segments(line);
-        let whole = [(0, line.len())];
-        segments
-            .as_deref()
-            .unwrap_or(&whole)
-            .iter()
-            .any(|&(seg_start, seg_end)| {
-                self.leftmost
-                    .search(
-                        &line[seg_start..seg_end],
-                        0,
-                        None,
-                        segment_options(line, seg_start, seg_end),
-                    )
-                    .is_some()
-            })
+    fn is_match(&self, line: &[u8], segments: Option<&[(usize, usize)]>) -> bool {
+        let Some(segments) = segments else {
+            return self
+                .leftmost
+                .search(line, 0, None, SearchOptions::SEARCH_OPTION_NONE)
+                .is_some();
+        };
+        segments.iter().any(|&(seg_start, seg_end)| {
+            self.leftmost
+                .search(
+                    &line[seg_start..seg_end],
+                    0,
+                    None,
+                    segment_options(line, seg_start, seg_end),
+                )
+                .is_some()
+        })
     }
 }
 
@@ -494,7 +526,12 @@ unsafe impl Send for OnigRegex {}
 unsafe impl Sync for OnigRegex {}
 
 impl OnigRegex {
-    fn compile(pattern: &str, syntax: &Syntax, options: RegexOptions) -> Result<Self, OnigError> {
+    fn compile(
+        pattern: &str,
+        syntax: &Syntax,
+        options: RegexOptions,
+        encoding: OnigEncoding,
+    ) -> Result<Self, OnigError> {
         let pattern = pattern.as_bytes();
         let mut raw = null_mut();
         let mut error = onig_sys::OnigErrorInfo {
@@ -510,8 +547,8 @@ impl OnigRegex {
 
         let mut compile_info = onig_sys::OnigCompileInfo {
             num_of_elements: 5,
-            pattern_enc: &raw mut OnigEncodingUTF8,
-            target_enc: &raw mut OnigEncodingUTF8,
+            pattern_enc: encoding,
+            target_enc: encoding,
             syntax: syntax as *const Syntax as *mut Syntax as *mut onig_sys::OnigSyntaxType,
             option: options.bits(),
             case_fold_flag,
@@ -520,7 +557,7 @@ impl OnigRegex {
         let _guard = ONIG_NEW_MUTEX.lock().unwrap();
         // SAFETY: `pattern` supplies a valid start/end pointer pair for the
         // duration of the call, and `compile_info` uses Oniguruma's built-in
-        // UTF-8 encoding plus a syntax value borrowed from the safe wrapper.
+        // encoding plus a syntax value borrowed from the safe wrapper.
         let result = unsafe {
             onig_sys::onig_new_deluxe(
                 &mut raw,
