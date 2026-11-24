@@ -2590,3 +2590,26 @@ fn exclude_dir_matches_operand_as_written() {
         .fails_with_code(1)
         .no_output();
 }
+
+#[cfg(unix)]
+#[test]
+fn diagnostics_follow_earlier_output() {
+    use std::process::{Command, Stdio};
+    let (scene, _) = ucmd();
+    scene.fixtures.write("a.txt", "foo a\n");
+    scene.fixtures.write("bin.dat", "foo\0bin\n");
+    scene.fixtures.write("b.txt", "foo b\n");
+    let log = std::fs::File::create(scene.fixtures.plus("log")).unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_grep"))
+        .current_dir(scene.fixtures.as_string())
+        .args(["foo", "a.txt", "bin.dat", "missing.txt", "b.txt"])
+        .stdout(Stdio::from(log.try_clone().unwrap()))
+        .stderr(Stdio::from(log))
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(2));
+    assert_eq!(
+        scene.fixtures.read("log"),
+        "a.txt:foo a\ngrep: bin.dat: binary file matches\ngrep: missing.txt: No such file or directory\nb.txt:foo b\n"
+    );
+}
