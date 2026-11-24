@@ -56,6 +56,10 @@ cargo test
 
 This project uses [pre-commit](https://pre-commit.com); run `pre-commit install` to enable the git hooks.
 
+## Extensions
+
+On Windows, `-r` joins the paths it prints with `\`. Set `UUTILS_PATH_SEPARATOR=slash` to have it join them with `/`, which is what a POSIX-style shell (MSYS2, Git Bash) and tools such as `xargs` expect. The directory you named keeps the spelling you gave it.
+
 ## Known Issues
 
 * Does not take `LANG`, etc., into account for handling file encodings (non-UTF8 matches are treated as binary)
