@@ -7,7 +7,8 @@ use crate::{Config, RegexMode};
 use memchr::memmem;
 use onig::{RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior, SyntaxOperator};
 use onig_sys::{
-    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
+    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, ONIGERR_UNMATCHED_RANGE_SPECIFIER_IN_CHAR_CLASS,
+    OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
 };
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
@@ -315,6 +316,8 @@ impl CompiledPattern {
         if config.regex_mode == RegexMode::Extended {
             // GNU grep -E reads an unmatched `)` as a literal.
             syntax.enable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_UNMATCHED_CLOSE_SUBEXP);
+            // GNU grep rejects chained range operators like `[a-c-e]`.
+            syntax.disable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_DOUBLE_RANGE_OP_IN_CC);
         }
 
         if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended)
@@ -379,7 +382,10 @@ impl CompiledPattern {
                 // GNU grep reports it simply as "Invalid range end" (no pattern
                 // echoed), so translate this code to match its diagnostic.
                 let message = match err.code {
-                    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS => "Invalid range end".to_string(),
+                    ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS
+                    | ONIGERR_UNMATCHED_RANGE_SPECIFIER_IN_CHAR_CLASS => {
+                        "Invalid range end".to_string()
+                    }
                     _ => format!("invalid pattern \"{pattern}\": {}", err.message),
                 };
                 USimpleError::new(2, message)
