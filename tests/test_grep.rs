@@ -1,4 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(unix)]
+use rstest::rstest;
 #[cfg(unix)]
 use uutests::util::TerminalSimulation;
 use uutests::util::{TestScenario, UCommand};
@@ -1914,28 +1917,29 @@ fn directories_read_errors() {
 
 // A directory opens but fails to read. GNU still prints its count for `-c`
 // and its name for `-L`. (On Windows a directory does not open at all.)
+// `foo` takes the literal fast path, `fo*` the line-at-a-time one; `-v` never
+// takes the fast path.
 #[cfg(unix)]
-#[test]
-fn count_and_files_without_match_list_unreadable_input() {
-    let (scene, _) = ucmd();
+#[rstest]
+#[case::count_fast("-c", "foo", "dir:0\na.txt:1\n")]
+#[case::count_regex("-c", "fo*", "dir:0\na.txt:1\n")]
+#[case::count_invert("-cv", "foo", "dir:0\na.txt:0\n")]
+#[case::without_match_fast("-L", "foo", "dir\n")]
+#[case::without_match_regex("-L", "fo*", "dir\n")]
+#[case::with_matches_fast("-l", "foo", "a.txt\n")]
+#[case::with_matches_regex("-l", "fo*", "a.txt\n")]
+fn count_and_files_without_match_list_unreadable_input(
+    #[case] option: &str,
+    #[case] pattern: &str,
+    #[case] stdout: &str,
+) {
+    let (scene, mut c) = ucmd();
     scene.fixtures.mkdir("dir");
     scene.fixtures.write("a.txt", "foo\n");
-
-    // `foo` takes the literal fast path, `fo*` the line-at-a-time one.
-    for pattern in ["foo", "fo*"] {
-        for (option, stdout) in [
-            ("-c", "dir:0\na.txt:1\n"),
-            ("-cv", "dir:0\na.txt:0\n"),
-            ("-L", "dir\n"),
-            ("-l", "a.txt\n"),
-        ] {
-            let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
-            c.args(&[option, pattern, "dir", "a.txt"])
-                .fails_with_code(2)
-                .stdout_is(stdout)
-                .stderr_is("grep: dir: Is a directory\n");
-        }
-    }
+    c.args(&[option, pattern, "dir", "a.txt"])
+        .fails_with_code(2)
+        .stdout_is(stdout)
+        .stderr_is("grep: dir: Is a directory\n");
 }
 
 #[test]
