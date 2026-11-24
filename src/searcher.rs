@@ -181,7 +181,13 @@ impl<'a> Searcher<'a> {
             // We're only interested in files, so skip dirs.
             // If we have a --exclude-dir pattern, skip matching directories entirely.
             if file_type.is_dir() {
-                if self.config.exclude_dir_globs.skips(entry.file_name()) {
+                // An exclude-dir pattern can match the directory's base name,
+                // its path as walked, or a starting point as written.
+                let globs = &self.config.exclude_dir_globs;
+                if globs.skips(entry.file_name())
+                    || globs.skips(entry.path().as_os_str())
+                    || (entry.depth() == 0 && globs.skips(start.as_os_str()))
+                {
                     walker.skip_current_dir();
                 }
                 continue;

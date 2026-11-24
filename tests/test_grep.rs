@@ -2528,3 +2528,39 @@ fn only_matching_empty_match_does_not_split_utf8() {
             "{red}run{reset} \u{1F635}{red}rm{reset} {red}now{reset}\n"
         ));
 }
+
+#[test]
+fn exclude_dir_matches_operand_as_written() {
+    let (scene, _) = ucmd();
+    scene.fixtures.mkdir_all("box/inner");
+    scene.fixtures.write("box/inner/f.txt", "hay\n");
+    for pattern in ["./box", "./b*", "box"] {
+        let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+        c.args(&["-r", &format!("--exclude-dir={pattern}"), "hay", "./box"])
+            .fails_with_code(1)
+            .no_output();
+    }
+    // A pattern with a slash that does not match the full relative path is not excluded.
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-r", "--exclude-dir=./inner", "hay", "./box"])
+        .succeeds()
+        .stdout_contains("f.txt:hay")
+        .no_stderr();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-r", "--exclude-dir=box/inner", "hay", "./box"])
+        .succeeds()
+        .stdout_contains("f.txt:hay")
+        .no_stderr();
+
+    // A pattern matching the relative path of a subdirectory excludes it.
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-r", "--exclude-dir=./box/inner", "hay", "./box"])
+        .fails_with_code(1)
+        .no_output();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-r", "--exclude-dir=box/inner", "hay", "box"])
+        .fails_with_code(1)
+        .no_output();
+}
