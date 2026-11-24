@@ -2697,3 +2697,35 @@ fn diagnostics_follow_earlier_output() {
         "a.txt:foo a\ngrep: bin.dat: binary file matches\ngrep: missing.txt: No such file or directory\nb.txt:foo b\n"
     );
 }
+
+#[test]
+fn same_setting_options_last_wins() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write_bytes("bin", b"hit\0x\n");
+    c.args(&["-a", "-I", "hit", "bin"])
+        .fails_with_code(1)
+        .no_output();
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-I", "--binary-files=text", "hit", "bin"])
+        .succeeds()
+        .stdout_only_bytes(b"hit\0x\n");
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["--binary-files=without-match", "-a", "hit", "bin"])
+        .succeeds()
+        .stdout_only_bytes(b"hit\0x\n");
+
+    let (scene, mut c) = ucmd();
+    scene.fixtures.mkdir("tree");
+    scene.fixtures.write("tree/f", "foo\n");
+    c.args(&["-r", "-d", "skip", "foo", "tree"])
+        .fails_with_code(1)
+        .no_output();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-A0", "--no-group-separator", "--group-separator=::", "x"])
+        .pipe_in("x\ny\nx\n")
+        .succeeds()
+        .stdout_only("x\n::\nx\n");
+}
