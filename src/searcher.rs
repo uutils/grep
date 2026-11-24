@@ -428,25 +428,19 @@ impl<'a> Searcher<'a> {
 
         'outer: while let Some((chunk, chunk_off)) = lb.read_chunk(reader)? {
             let mut p = 0;
-            // NUL scanned up to here; terminators counted up to `nl_cursor`.
-            let mut nul_scanned = 0;
             let mut nl_cursor = 0;
             let mut nl_before = 0u64;
+
+            // If an earlier block already matched, a NUL in this block marks the file binary.
+            if detect_binary && !binary && matched && memchr(0, chunk).is_some() {
+                binary = true;
+            }
 
             while p < chunk.len() {
                 let Some(rel) = leftmost_match(finders, &chunk[p..]) else {
                     break;
                 };
                 let (line_beg, line_end) = line_bounds(chunk, p + rel);
-
-                // A NUL anywhere up to this line marks the file binary, as does
-                // an invalid-UTF-8 matching line.
-                if detect_binary && !binary {
-                    if memchr(0, &chunk[nul_scanned..line_end]).is_some() {
-                        binary = true;
-                    }
-                    nul_scanned = line_end;
-                }
 
                 let line = &chunk[line_beg..line_end];
                 #[cfg(windows)]
@@ -456,7 +450,12 @@ impl<'a> Searcher<'a> {
                     line
                 };
 
-                if detect_binary && !binary && std::str::from_utf8(line).is_err() {
+                // A NUL in this input block or an invalid-UTF-8 matching line
+                // marks the file binary and suppresses output for this block.
+                if detect_binary
+                    && !binary
+                    && (memchr(0, chunk).is_some() || std::str::from_utf8(line).is_err())
+                {
                     binary = true;
                 }
 
@@ -494,10 +493,7 @@ impl<'a> Searcher<'a> {
                 }
             }
 
-            // Carry NUL detection and the line tally across the chunk boundary.
-            if detect_binary && !binary && memchr(0, &chunk[nul_scanned..]).is_some() {
-                binary = true;
-            }
+            // Carry the line tally across the chunk boundary.
             if want_lineno {
                 base_lines += nl_before + count_terminators(&chunk[nl_cursor..]);
             }
@@ -537,7 +533,7 @@ impl<'a> Searcher<'a> {
         let mut read_error = None;
 
         loop {
-            let (line, line_start) = match lb.read_line(reader) {
+            let (line, line_start, has_nul) = match lb.read_line(reader) {
                 Ok(Some(line)) => line,
                 Ok(None) => break,
                 Err(err) => {
@@ -559,8 +555,10 @@ impl<'a> Searcher<'a> {
                     line
                 };
 
-            // Any null byte flips us into binary mode.
-            if !self.session_mark_binary_if(|| memchr(0, line).is_some()) {
+            // A NUL in this input block flips us into binary mode.
+            if !self.session_mark_binary_if(|| {
+                has_nul || (self.config.null_data && memchr(0, line).is_some())
+            }) {
                 return Ok(false);
             }
 
