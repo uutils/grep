@@ -517,10 +517,12 @@ fn perl_regexp_duplicate_patterns() {
         .succeeds()
         .stdout_only("bar\n");
 
-    // Different patterns are still refused.
+    // Different patterns are still refused. grep exits before reading its
+    // input, so the harness's write to stdin can fail with EPIPE.
     let (_s, mut c) = ucmd();
     c.args(&["-P", "-e", "bar", "-e", "baz"])
         .pipe_in("bar\n")
+        .ignore_stdin_write_error()
         .fails_with_code(2)
         .stderr_contains("only supports a single pattern");
 }
