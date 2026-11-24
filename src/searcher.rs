@@ -182,11 +182,15 @@ impl<'a> Searcher<'a> {
             // If we have a --exclude-dir pattern, skip matching directories entirely.
             if file_type.is_dir() {
                 // An exclude-dir pattern can match the directory's base name,
-                // its path as walked, or a starting point as written.
+                // its path as walked, or a starting point as written. The one
+                // exception is the implicit "." walked when `-r` is used
+                // without a file operand: GNU never excludes it.
+                let implicit_root = strip_root && entry.depth() == 0;
                 let globs = &self.config.exclude_dir_globs;
-                if globs.skips(entry.file_name())
-                    || globs.skips(entry.path().as_os_str())
-                    || (entry.depth() == 0 && globs.skips(start.as_os_str()))
+                if !implicit_root
+                    && (globs.skips(entry.file_name())
+                        || globs.skips(entry.path().as_os_str())
+                        || (entry.depth() == 0 && globs.skips(start.as_os_str())))
                 {
                     walker.skip_current_dir();
                 }
