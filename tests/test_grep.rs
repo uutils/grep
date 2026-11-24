@@ -1147,6 +1147,93 @@ fn label_only_applies_to_stdin() {
 }
 
 #[test]
+fn option_values_starting_with_hyphen() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("-list", "foo\n");
+    c.args(&["-f", "-list"])
+        .pipe_in("foo\nbar\n")
+        .succeeds()
+        .stdout_only("foo\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-H", "--label", "-in-", "foo"])
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_only("-in-:foo\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["--group-separator", "-=-", "-A0", "x"])
+        .pipe_in("x\ny\nx\n")
+        .succeeds()
+        .stdout_only("x\n-=-\nx\n");
+
+    // --include, --exclude, --exclude-dir and --exclude-from also accept a
+    // value that starts with a hyphen, in both `--opt=VALUE` and `--opt VALUE`
+    // form.
+    let (scene, _) = ucmd();
+    scene.fixtures.mkdir_all("tree/-tmp");
+    scene.fixtures.write("tree/keep.txt", "foo\n");
+    scene.fixtures.write("tree/-odd.txt", "foo\n");
+    scene.fixtures.write("tree/-tmp/hidden.txt", "foo\n");
+    scene.fixtures.write("-excludes", "-odd.txt\n");
+
+    let cases: &[(&[&str], &[&str], &[&str])] = &[
+        (
+            &["--include=-odd.txt"],
+            &["-odd.txt"],
+            &["keep.txt", "hidden.txt"],
+        ),
+        (
+            &["--include", "-odd.txt"],
+            &["-odd.txt"],
+            &["keep.txt", "hidden.txt"],
+        ),
+        (
+            &["--exclude=-odd.txt"],
+            &["keep.txt", "hidden.txt"],
+            &["-odd.txt"],
+        ),
+        (
+            &["--exclude", "-odd.txt"],
+            &["keep.txt", "hidden.txt"],
+            &["-odd.txt"],
+        ),
+        (
+            &["--exclude-dir=-tmp"],
+            &["keep.txt", "-odd.txt"],
+            &["hidden.txt"],
+        ),
+        (
+            &["--exclude-dir", "-tmp"],
+            &["keep.txt", "-odd.txt"],
+            &["hidden.txt"],
+        ),
+        (
+            &["--exclude-from=-excludes"],
+            &["keep.txt", "hidden.txt"],
+            &["-odd.txt"],
+        ),
+        (
+            &["--exclude-from", "-excludes"],
+            &["keep.txt", "hidden.txt"],
+            &["-odd.txt"],
+        ),
+    ];
+    for (opt, expected, unexpected) in cases {
+        let mut args = vec!["-r", "-l"];
+        args.extend_from_slice(opt);
+        args.extend_from_slice(&["foo", "tree"]);
+        let result = scene.cmd(env!("CARGO_BIN_EXE_grep")).args(&args).succeeds();
+        for s in *expected {
+            result.stdout_contains(*s);
+        }
+        for s in *unexpected {
+            result.stdout_does_not_contain(*s);
+        }
+    }
+}
+
+#[test]
 fn line_number_and_byte_offset_prefixes() {
     let (_s, mut c) = ucmd();
     c.args(&["-n", "b"])
