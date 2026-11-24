@@ -172,8 +172,9 @@ fn read_pattern_file(path: &OsStr) -> UResult<String> {
 
 #[uucore::main(no_signals)]
 pub fn uumain(args: impl uucore::Args) -> UResult<()> {
-    let args = expand_num_shorthand(args);
-    let matches = uucore::clap_localization::handle_clap_result_with_exit_code(uu_app(), args, 2)?;
+    let app = uu_app();
+    let args = expand_num_shorthand(&app, args);
+    let matches = uucore::clap_localization::handle_clap_result_with_exit_code(app, args, 2)?;
 
     // GNU grep ignores a malformed legacy match color without a warning.
     let grep_color = std::env::var("GREP_COLOR")
@@ -904,7 +905,7 @@ pub fn uu_app() -> Command {
 /// Expand GNU grep's `-NUM` shorthand to `-C NUM`.
 ///
 /// Note that `-a12b` means `-a -C 12 -b`.
-fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
+fn expand_num_shorthand(cmd: &Command, args: impl Iterator<Item = OsString>) -> Vec<OsString> {
     const SHORT_OPTS_WITH_VALUE: &[u8] = b"efmABCDd";
 
     // Rebuild a single option argument out of `prefix` and `bytes`.
@@ -917,8 +918,6 @@ fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
         unsafe { OsString::from_encoded_bytes_unchecked(buf) }
     }
 
-    // Only built when a long option shows up.
-    let cmd = std::cell::LazyCell::new(uu_app);
     let mut out: Vec<OsString> = args.collect();
     let mut i = 1; // argv[0] is the executable name
 
@@ -939,7 +938,7 @@ fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
 
         // Skip --long options, and the next argument if it is their value.
         if let Some(name) = arg.strip_prefix(b"-") {
-            i += 1 + usize::from(long_option_takes_next_arg(&cmd, name));
+            i += 1 + usize::from(long_option_takes_next_arg(cmd, name));
             continue;
         }
 
