@@ -491,17 +491,14 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
 
     let matcher = Matcher::compile(&config)?;
 
-    // grep with -m 0 should not open any file. Neither should an empty pattern list
-    // (e.g. `-f /dev/null`), which matches no line, except with `-v` (every line is
-    // selected) or `-L` (every file is listed), which still have to read the inputs.
-    if config.max_count == Some(0) || (patterns.is_empty() && !invert_match && !files_without_match)
-    {
-        return Err(ExitCode::new(1));
-    }
-
-    // An empty pattern matches every line; with `-v`, GNU grep selects no lines
-    // and exits as "no match" without reading any input files.
-    if invert_match && patterns.iter().any(|pattern| pattern.is_empty()) {
+    // With -m 0, an empty pattern list, or -v and an empty pattern, no line can be
+    // selected, so GNU grep exits as "no match" without opening any file.
+    // -L still has to list every file (and report the ones it cannot read), so it
+    // goes on searching.
+    let nothing_selectable = config.max_count == Some(0)
+        || (patterns.is_empty() && !invert_match)
+        || (invert_match && patterns.iter().any(|pattern| pattern.is_empty()));
+    if nothing_selectable && !files_without_match {
         return Err(ExitCode::new(1));
     }
 
