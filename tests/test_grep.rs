@@ -2662,3 +2662,33 @@ fn diagnostics_follow_earlier_output() {
         "a.txt:foo a\ngrep: bin.dat: binary file matches\ngrep: missing.txt: No such file or directory\nb.txt:foo b\n"
     );
 }
+
+#[test]
+fn exclude_dir_does_not_apply_to_implicit_cwd() {
+    // `-r` with no file operand searches the implicit "."; GNU never
+    // matches it against --exclude-dir. An explicit "." operand is
+    // still subject to exclusion.
+    let (scene, _) = ucmd();
+    scene.fixtures.mkdir_all("flat/.hidden");
+    scene.fixtures.write("flat/.hidden/h.txt", "grep me\n");
+    scene.fixtures.write("flat/only.txt", "grep me\n");
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.current_dir(scene.fixtures.plus("flat"))
+        .args(&["-r", "--exclude-dir=.*", "grep"])
+        .succeeds()
+        .stdout_only("only.txt:grep me\n");
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.current_dir(scene.fixtures.plus("flat"))
+        .args(&["-r", "--exclude-dir=.", "grep"])
+        .succeeds()
+        .stdout_contains(".hidden/h.txt:grep me\n")
+        .stdout_contains("only.txt:grep me\n");
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.current_dir(scene.fixtures.plus("flat"))
+        .args(&["-r", "--exclude-dir=.", "grep", "."])
+        .fails_with_code(1)
+        .no_output();
+}
