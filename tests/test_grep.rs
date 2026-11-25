@@ -180,6 +180,28 @@ fn character_class_lookalike_is_valid(#[case] args: &[&str]) {
 }
 
 #[test]
+fn reversed_interval_is_error() {
+    for args in [&["-E", "fo{2,1}"][..], &["fo\\{2,1\\}"][..]] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .fails_with_code(2)
+            .stderr_contains("Invalid content of \\{\\}");
+    }
+
+    for args in [&["-E", "[{2,1}]"][..], &["[{2,1}]"][..]] {
+        let (_s, mut c) = ucmd();
+        c.args(args).pipe_in("{\n").succeeds().stdout_only("{\n");
+    }
+    for args in [&["-E", "^fo{1,2}+$"][..], &["^fo\\{1,2\\}\\+$"][..]] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .pipe_in("foo\n")
+            .succeeds()
+            .stdout_only("foo\n");
+    }
+}
+
+#[test]
 fn max_count_rewinds_seekable_stdin() {
     // -m stops mid-input after reading ahead. When standard input can seek,
     // the unread remainder must be left in place for the next reader.
