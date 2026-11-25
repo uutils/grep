@@ -173,11 +173,47 @@ fn read_pattern_file(path: &OsStr) -> UResult<String> {
     contents.map_err(|err| read_error(label, &err))
 }
 
+/// Parse command-line arguments, formatting unknown option errors to match GNU grep.
+fn parse_args(cmd: Command, itr: impl IntoIterator<Item = OsString>) -> UResult<clap::ArgMatches> {
+    cmd.try_get_matches_from(itr).map_err(|e| {
+        if e.exit_code() == 0 {
+            e.into()
+        } else if e.kind() == clap::error::ErrorKind::UnknownArgument {
+            if let Some(arg) = e.get(clap::error::ContextKind::InvalidArg) {
+                let arg_str = arg.to_string();
+                let util_name = uucore::util_name();
+                let msg = if let Some(long) = arg_str.strip_prefix("--") {
+                    format!(
+                        "unrecognized option '--{long}'\nUsage: {util_name} [OPTION]... PATTERNS [FILE]...\nTry '{util_name} --help' for more information."
+                    )
+                } else if let Some(short) = arg_str.strip_prefix('-') {
+                    format!(
+                        "invalid option -- '{short}'\nUsage: {util_name} [OPTION]... PATTERNS [FILE]...\nTry '{util_name} --help' for more information."
+                    )
+                } else {
+                    format!(
+                        "unrecognized option '{arg_str}'\nUsage: {util_name} [OPTION]... PATTERNS [FILE]...\nTry '{util_name} --help' for more information."
+                    )
+                };
+                USimpleError::new(2, msg)
+            } else {
+                let formatter = uucore::clap_localization::ErrorFormatter::new(uucore::util_name());
+                let code = formatter.print_error(&e, 2);
+                USimpleError::new(code, "")
+            }
+        } else {
+            let formatter = uucore::clap_localization::ErrorFormatter::new(uucore::util_name());
+            let code = formatter.print_error(&e, 2);
+            USimpleError::new(code, "")
+        }
+    })
+}
+
 #[uucore::main(no_signals)]
 pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let app = uu_app();
     let args = expand_num_shorthand(&app, args);
-    let matches = uucore::clap_localization::handle_clap_result_with_exit_code(app, args, 2)?;
+    let matches = parse_args(app, args)?;
 
     // GNU grep ignores a malformed legacy match color without a warning.
     let grep_color = std::env::var("GREP_COLOR")
