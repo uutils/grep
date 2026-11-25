@@ -339,6 +339,10 @@ impl CompiledPattern {
                 show_warning!("{op} at start of expression");
                 normalized_pattern = Some(rest.to_string());
             }
+            let current = normalized_pattern.as_deref().unwrap_or(pattern);
+            if let Some(rewritten) = normalize_anchor_repeats(current) {
+                normalized_pattern = Some(rewritten);
+            }
             normalized_pattern.as_deref().unwrap_or(pattern)
         } else {
             pattern
@@ -580,6 +584,89 @@ fn strip_leading_interval_repeat(pattern: &str) -> Option<&str> {
         && body.bytes().all(|b| b.is_ascii_digit() || b == b',')
         && body.bytes().any(|b| b.is_ascii_digit());
     is_interval.then_some(&pattern[close + 1..])
+}
+
+/// Rewrite ERE repeat operators immediately following `^` or `$` anchors.
+/// GNU grep warns `<op> at start of expression` and strips the repeat after `^`,
+/// and silently accepts repeats after `$`.
+fn normalize_anchor_repeats(pattern: &str) -> Option<String> {
+    let bytes = pattern.as_bytes();
+    if !bytes.contains(&b'^') && !bytes.contains(&b'$') {
+        return None;
+    }
+
+    let mut out: Option<Vec<u8>> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => {
+                let next = scan_bracket(bytes, i + 1).1;
+                if let Some(buf) = out.as_mut() {
+                    buf.extend_from_slice(&bytes[i..next]);
+                }
+                i = next;
+            }
+            b'\\' => {
+                let next = (i + 2).min(bytes.len());
+                if let Some(buf) = out.as_mut() {
+                    buf.extend_from_slice(&bytes[i..next]);
+                }
+                i = next;
+            }
+            b'^' => {
+                let mut next = i + 1;
+                while let Some((op, rest)) = strip_leading_repeat_operator(&pattern[next..]) {
+                    show_warning!("{op} at start of expression");
+                    out.get_or_insert_with(|| bytes[..i].to_vec());
+                    next = bytes.len() - rest.len();
+                }
+                if let Some(buf) = out.as_mut() {
+                    buf.push(b'^');
+                }
+                i = next;
+            }
+            b'$' => {
+                let mut next = i + 1;
+                let mut can_skip_anchor = false;
+                let mut had_repeat = false;
+                while let Some((op, rest)) = strip_leading_repeat_operator(&pattern[next..]) {
+                    had_repeat = true;
+                    let op_bytes = &pattern[next..bytes.len() - rest.len()];
+                    if matches!(op, "*" | "?") || interval_allows_zero(op_bytes) {
+                        can_skip_anchor = true;
+                    }
+                    next = bytes.len() - rest.len();
+                }
+                if had_repeat {
+                    let buf = out.get_or_insert_with(|| bytes[..i].to_vec());
+                    if can_skip_anchor {
+                        buf.extend_from_slice(b"($|)");
+                    } else {
+                        buf.push(b'$');
+                    }
+                } else if let Some(buf) = out.as_mut() {
+                    buf.push(b'$');
+                }
+                i = next;
+            }
+            b => {
+                if let Some(buf) = out.as_mut() {
+                    buf.push(b);
+                }
+                i += 1;
+            }
+        }
+    }
+
+    out.map(|buf| String::from_utf8(buf).expect("rewritten pattern stays valid UTF-8"))
+}
+
+fn interval_allows_zero(op: &str) -> bool {
+    let Some(inner) = op.strip_prefix('{').and_then(|s| s.strip_suffix('}')) else {
+        return false;
+    };
+    let min_part = inner.split(',').next().unwrap_or("");
+    min_part.is_empty() || min_part.bytes().all(|b| b == b'0')
 }
 
 /// Whether the extended `pattern` has an empty interval `{}` after something it
