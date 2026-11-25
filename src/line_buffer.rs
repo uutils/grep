@@ -22,6 +22,8 @@ pub struct LineBuffer {
     next_line_start: u64,
     /// Set once a file read has returned EOF.
     eof: bool,
+    /// Lazily populated: whether the current buffered input contains a NUL byte.
+    has_nul: bool,
     /// The line terminator is typically NUL or LF.
     line_terminator: u8,
 }
@@ -37,6 +39,7 @@ impl LineBuffer {
 
             next_line_start: 0,
             eof: false,
+            has_nul: false,
             line_terminator,
         }
     }
@@ -48,13 +51,14 @@ impl LineBuffer {
         self.end = 0;
         self.next_line_start = 0;
         self.eof = false;
+        self.has_nul = false;
     }
 
     /// Read the next line from the given reader.
     /// Returns `Ok(None)` if the end of the reader is reached.
-    /// Otherwise, returns `Ok(Some((line, line_start)))`, where `line` is the line read (without the
+    /// Otherwise, returns `Ok(Some((line, line_start, self.has_nul)))`, where `line` is the line read (without the
     /// `line_terminator`), and `line_start` is the absolute byte offset of the start of the line.
-    pub fn read_line(&mut self, file: &mut File) -> io::Result<Option<(&[u8], u64)>> {
+    pub fn read_line(&mut self, file: &mut File) -> io::Result<Option<(&[u8], u64, bool)>> {
         if self.eof {
             return Ok(None);
         }
@@ -69,7 +73,7 @@ impl LineBuffer {
                 self.beg = end + 1;
                 self.scan = self.beg;
                 self.next_line_start += (self.beg - beg) as u64;
-                return Ok(Some((line, line_start)));
+                return Ok(Some((line, line_start, self.has_nul)));
             }
 
             // `buffer[pos..end]` has no terminator. Remember that for the next scan.
@@ -105,8 +109,14 @@ impl LineBuffer {
                     let line = &self.buffer[self.beg..self.end];
                     let line_start = self.next_line_start;
                     self.eof = true; // shortcut the next call to read_line()
-                    Ok(Some((line, line_start)))
+                    Ok(Some((line, line_start, self.has_nul)))
                 };
+            }
+            if self.line_terminator != 0
+                && !self.has_nul
+                && memchr(0, &self.buffer[self.end..self.end + n]).is_some()
+            {
+                self.has_nul = true;
             }
             self.end += n;
         }
