@@ -176,7 +176,8 @@ fn read_pattern_file(path: &OsStr) -> UResult<String> {
 #[uucore::main(no_signals)]
 pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let app = uu_app();
-    let args = expand_num_shorthand(&app, args);
+    let posixly_correct = std::env::var_os("POSIXLY_CORRECT").is_some();
+    let args = preprocess_args(&app, args, posixly_correct);
     let matches = uucore::clap_localization::handle_clap_result_with_exit_code(app, args, 2)?;
 
     // GNU grep ignores a malformed legacy match color without a warning.
@@ -915,10 +916,15 @@ pub fn uu_app() -> Command {
         )
 }
 
-/// Expand GNU grep's `-NUM` shorthand to `-C NUM`.
-///
-/// Note that `-a12b` means `-a -C 12 -b`.
-fn expand_num_shorthand(cmd: &Command, args: impl Iterator<Item = OsString>) -> Vec<OsString> {
+/// Preprocess command-line arguments:
+/// - Expand GNU grep's `-NUM` shorthand to `-C NUM` (`-a12b` means `-a -C 12 -b`).
+/// - With `posixly_correct`, options end at the first operand, as POSIX requires:
+///   a `--` is inserted in front of it and later arguments are left alone.
+fn preprocess_args(
+    cmd: &Command,
+    args: impl Iterator<Item = OsString>,
+    posixly_correct: bool,
+) -> Vec<OsString> {
     const SHORT_OPTS_WITH_VALUE: &[u8] = b"efmABCDd";
 
     // Rebuild a single option argument out of `prefix` and `bytes`.
@@ -938,7 +944,16 @@ fn expand_num_shorthand(cmd: &Command, args: impl Iterator<Item = OsString>) -> 
         let arg = out[i].as_encoded_bytes();
 
         // Narrow down to `-flags` (and `--options`) and strip the leading `-` for easier matching.
-        let Some(arg) = arg.strip_prefix(b"-") else {
+        // A lone `-` (standard input) is an operand too.
+        let arg = if let Some(arg) = arg.strip_prefix(b"-")
+            && !arg.is_empty()
+        {
+            arg
+        } else {
+            if posixly_correct {
+                out.insert(i, OsString::from("--"));
+                break;
+            }
             // Not a flag, skip.
             i += 1;
             continue;

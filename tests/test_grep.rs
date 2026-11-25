@@ -1375,6 +1375,41 @@ fn abbreviated_long_options() {
 }
 
 #[test]
+fn posixly_correct_stops_options_at_first_operand() {
+    // (args, stdout, trailing argument reported as a missing file)
+    let cases: &[(&[&str], &str, &str)] = &[
+        (&["foo", "in", "-i"], "", "-i"),
+        (&["-c", "Foo", "in", "-3"], "in:1\n", "-3"),
+        (&["-e", "Foo", "in", "-c"], "in:Foo\n", "-c"),
+        (&["-i", "--", "foo", "in", "-c"], "in:Foo\n", "-c"),
+        (&["Foo", "-", "-c"], "(standard input):Foo\n", "-c"),
+    ];
+    #[cfg(not(windows))]
+    let enoent = "No such file or directory";
+    #[cfg(windows)]
+    let enoent = "The system cannot find the file specified.";
+
+    for value in ["1", ""] {
+        for (args, stdout, missing) in cases {
+            let (scene, mut c) = ucmd();
+            scene.fixtures.write("in", "Foo\n");
+            c.env("POSIXLY_CORRECT", value)
+                .args(args)
+                .ignore_stdin_write_error()
+                .pipe_in("Foo\n")
+                .fails_with_code(2)
+                .stdout_is(*stdout)
+                .stderr_contains(format!("{missing}: {enoent}"));
+        }
+    }
+
+    // Without the variable, options after an operand still apply.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("in", "Foo\n");
+    c.args(&["foo", "in", "-i"]).succeeds().stdout_only("Foo\n");
+}
+
+#[test]
 fn num_shorthand_allows_non_ascii_attached_values() {
     // A non-ASCII attached value is legitimate: `-1e🙂` is `-C 1 -e 🙂`.
     let ok = |args: &[&str]| {
