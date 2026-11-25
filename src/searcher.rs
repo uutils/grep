@@ -199,8 +199,14 @@ impl<'a> Searcher<'a> {
                 continue;
             }
 
-            // Skip non-regular files unless `-D read` was given explicitly.
-            if !file_type.is_file() && self.config.device_mode != DeviceMode::Read {
+            // Devices/FIFOs/sockets are read under `-R` (or explicitly with `-D read`),
+            // but skipped by default under `-r` (or with `-D skip`).
+            let read_devices = match self.config.device_mode {
+                DeviceMode::Read => true,
+                DeviceMode::Skip => false,
+                DeviceMode::Default => self.config.follow_symlinks,
+            };
+            if !file_type.is_file() && !read_devices {
                 continue;
             }
 
