@@ -2697,3 +2697,27 @@ fn diagnostics_follow_earlier_output() {
         "a.txt:foo a\ngrep: bin.dat: binary file matches\ngrep: missing.txt: No such file or directory\nb.txt:foo b\n"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn dereference_recursive_reads_special_files() {
+    use std::os::unix::net::UnixListener;
+
+    let (scene, _) = ucmd();
+    scene.fixtures.mkdir_all("tree");
+    scene.fixtures.write("tree/a.txt", "grep me\n");
+    let _sock = UnixListener::bind(scene.fixtures.plus("tree/sock")).unwrap();
+
+    // -R opens the socket, which fails like GNU.
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-R", "grep", "tree"])
+        .fails_with_code(2)
+        .stdout_is("tree/a.txt:grep me\n")
+        .stderr_contains("tree/sock");
+
+    // -r still skips it.
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.args(&["-r", "grep", "tree"])
+        .succeeds()
+        .stdout_only("tree/a.txt:grep me\n");
+}
