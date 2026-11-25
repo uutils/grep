@@ -115,6 +115,24 @@ fn reversed_range_endpoints_match_gnu_message(#[case] args: &[&str]) {
 }
 
 #[test]
+fn chained_range_operators_rejected() {
+    // A chained range operator like [p-r-t] is rejected with "Invalid range end".
+    for args in [&["[p-r-t]"][..], &["-E", "[p-r-t]"][..]] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .fails_with_code(2)
+            .no_stdout()
+            .stderr_contains("Invalid range end");
+    }
+    // A trailing hyphen like [p-r-] remains a valid range followed by literal -.
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", "[p-r-]"])
+        .pipe_in("q\n-\nz\n")
+        .succeeds()
+        .stdout_only("q\n-\n");
+}
+
+#[test]
 fn unreadable_pattern_file_is_error() {
     // An unreadable -f / --exclude-from file is a usage error (exit 2), not the
     // exit 1 that means "no match". Only the label is ours: the text after it
