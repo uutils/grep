@@ -357,8 +357,10 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         _ => DeviceMode::Default,
     };
     let (before_context, after_context, has_context) = {
-        // "-o" overrides any context arguments
-        if only_matching {
+        // `-o` normally overrides context, because context lines rarely
+        // contain a match to print. With `-v` the context lines are the
+        // ones that matched, so `-o` still needs those spans.
+        if only_matching && !invert_match {
             (0, 0, false)
         } else {
             let fallback = context.unwrap_or(0);

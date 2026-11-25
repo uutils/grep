@@ -22,6 +22,7 @@ pub struct BufferedLine {
     pub line: Vec<u8>,
     pub line_number: u64,
     pub byte_offset: u64,
+    pub match_positions: Vec<(usize, usize)>,
 }
 
 impl BufferedLine {
@@ -31,7 +32,7 @@ impl BufferedLine {
             line_number: self.line_number,
             byte_offset: self.byte_offset,
             is_match: false,
-            match_positions: &[],
+            match_positions: &self.match_positions,
         }
     }
 }
@@ -62,7 +63,13 @@ impl ContextBuffer {
         self.len = 0;
     }
 
-    pub fn push(&mut self, line: &[u8], line_number: u64, byte_offset: u64) {
+    pub fn push(
+        &mut self,
+        line: &[u8],
+        line_number: u64,
+        byte_offset: u64,
+        match_positions: Vec<(usize, usize)>,
+    ) {
         debug_assert!(self.capacity > 0, "push on zero-capacity ContextBuffer");
 
         if self.len == self.slots.len() && self.len < self.capacity {
@@ -71,6 +78,7 @@ impl ContextBuffer {
                 line: Vec::new(),
                 line_number: 0,
                 byte_offset: 0,
+                match_positions: Vec::new(),
             });
         }
 
@@ -82,6 +90,7 @@ impl ContextBuffer {
         slot.line.extend_from_slice(line);
         slot.line_number = line_number;
         slot.byte_offset = byte_offset;
+        slot.match_positions = match_positions;
 
         self.head += 1;
         if self.head >= self.slots.len() {

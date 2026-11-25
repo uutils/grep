@@ -1304,12 +1304,14 @@ fn num_shorthand_in_short_option_clusters() {
     ok(&["-2A1", "MATCH"], "three\nfour\nMATCH\nsix\n");
 
     // Regression for the original fuzzer case: trailing flags in the same
-    // cluster are still parsed after the numeric options.
+    // cluster are still parsed after the numeric options. `-w44ov` is
+    // `-w -C 44 -o -v`. With `-v -o`, GNU prints matches from the context
+    // lines (here `a`).
     let (_s, mut c) = ucmd();
     c.args(&["-e", "a", "-w44ov"])
         .pipe_in("a\nb\n")
         .succeeds()
-        .stdout_only("");
+        .stdout_only("a\n");
 }
 
 #[test]
@@ -2493,6 +2495,27 @@ fn ere_brace_without_interval_is_literal(
         .pipe_in("zq{w\nzq{}\n")
         .succeeds()
         .stdout_only("1\n");
+}
+
+#[test]
+fn invert_only_matching_prints_context_matches() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-n", "-v", "-B", "1", "-o", "ant"])
+        .pipe_in("ant\nbee\nwasp\nbee\nant\n")
+        .succeeds()
+        .stdout_only("1-ant\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-n", "-v", "-A", "1", "-o", "dog"])
+        .pipe_in("cat\ndog\ncat\ncat\ncat\ndog\n")
+        .succeeds()
+        .stdout_only("2-dog\n6-dog\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-n", "-v", "-C", "1", "-o", "dog"])
+        .pipe_in("cat\ndog\ncat\n")
+        .succeeds()
+        .stdout_only("2-dog\n");
 }
 
 #[test]
