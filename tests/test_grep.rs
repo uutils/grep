@@ -1709,6 +1709,78 @@ fn binary_detection_via_invalid_utf8() {
 }
 
 #[test]
+fn invalid_utf8_line_withheld_but_later_matches_printed() {
+    // In a UTF-8 locale only the invalid line is left out; the other matches
+    // are still printed and the notice comes once, at the end. Covers the
+    // literal fast path and the line-at-a-time path.
+    let (scene, _) = ucmd();
+    scene
+        .fixtures
+        .write_bytes("u", b"foo 1\nfoo \xff 2\nfoo 3\n");
+    for pattern in ["foo", "fo."] {
+        scene
+            .cmd(env!("CARGO_BIN_EXE_grep"))
+            .env("LC_ALL", "C.UTF-8")
+            .args(&["-n", pattern, "u"])
+            .succeeds()
+            .stdout_is("1:foo 1\n3:foo 3\n")
+            .stderr_is("grep: u: binary file matches\n");
+
+        // The withheld line still counts towards -m.
+        scene
+            .cmd(env!("CARGO_BIN_EXE_grep"))
+            .env("LC_ALL", "C.UTF-8")
+            .args(&["-m2", pattern, "u"])
+            .succeeds()
+            .stdout_is("foo 1\n")
+            .stderr_is("grep: u: binary file matches\n");
+    }
+}
+
+#[test]
+fn invalid_utf8_line_withheld_with_context() {
+    // A withheld line still takes its before-context, but is not printed and
+    // starts no after-context of its own.
+    let (scene, _) = ucmd();
+    scene
+        .fixtures
+        .write_bytes("u", b"x1\na\nx \xff\nb\nc\nx2\nd\n");
+    for (args, expected) in [
+        (&["-A1"][..], "x1\na\n--\nx2\nd\n"),
+        (&["-B1"][..], "x1\na\n--\nc\nx2\n"),
+        (&["-n", "-C1"][..], "1:x1\n2-a\n--\n5-c\n6:x2\n7-d\n"),
+    ] {
+        scene
+            .cmd(env!("CARGO_BIN_EXE_grep"))
+            .env("LC_ALL", "C.UTF-8")
+            .args(args)
+            .args(&["x", "u"])
+            .succeeds()
+            .stdout_is(expected)
+            .stderr_is("grep: u: binary file matches\n");
+    }
+}
+
+#[test]
+fn invalid_utf8_line_stops_output_in_unibyte_locale() {
+    // In the C locale an encoding error makes the file binary: output stops at
+    // that line and the notice follows. Covers both search paths.
+    let (scene, _) = ucmd();
+    scene
+        .fixtures
+        .write_bytes("u", b"header\ncorrupt\x80data\nfooter\n");
+    for pattern in ["", "^"] {
+        scene
+            .cmd(env!("CARGO_BIN_EXE_grep"))
+            .env("LC_ALL", "C")
+            .args(&[pattern, "u"])
+            .succeeds()
+            .stdout_is("header\n")
+            .stderr_is("grep: u: binary file matches\n");
+    }
+}
+
+#[test]
 fn lone_control_byte_is_still_text() {
     let (scene, mut c) = ucmd();
     scene.fixtures.write_bytes("ctl", b"a\x01b\n");
