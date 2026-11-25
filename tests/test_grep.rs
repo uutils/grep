@@ -2697,3 +2697,33 @@ fn diagnostics_follow_earlier_output() {
         "a.txt:foo a\ngrep: bin.dat: binary file matches\ngrep: missing.txt: No such file or directory\nb.txt:foo b\n"
     );
 }
+
+#[test]
+fn rejects_invalid_character_class_names() {
+    let cases = [
+        ("[[:word:]]", "Invalid character class name"),
+        ("[[:ascii:]]", "Invalid character class name"),
+        ("[[:^digit:]]", "Invalid character class name"),
+        ("[[::]]", "Invalid character class name"),
+        ("[[:digit]]", "Unmatched [, [^, [:, [., or [="),
+        ("[x[:]y]", "Unmatched [, [^, [:, [., or [="),
+        ("[[:]", "Unmatched [, [^, [:, [., or [="),
+        ("[[:a:b]", "Unmatched [, [^, [:, [., or [="),
+    ];
+    for (pattern, message) in cases {
+        for mode in ["-G", "-E"] {
+            let (_s, mut c) = ucmd();
+            c.args(&[mode, pattern])
+                .pipe_in("7\n:]\n")
+                .fails_with_code(2)
+                .no_stdout()
+                .stderr_contains(message);
+        }
+    }
+    // The twelve POSIX names keep working.
+    let (_s, mut c) = ucmd();
+    c.args(&["[[:xdigit:]]"])
+        .pipe_in("f\nz\n")
+        .succeeds()
+        .stdout_only("f\n");
+}

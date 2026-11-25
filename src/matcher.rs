@@ -318,12 +318,9 @@ impl CompiledPattern {
         }
 
         if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended)
-            && has_confusing_bracket(pattern.as_bytes())
+            && let Err(msg) = check_brackets(pattern.as_bytes())
         {
-            return Err(USimpleError::new(
-                2,
-                "character class syntax is [[:space:]], not [:space:]".to_string(),
-            ));
+            return Err(USimpleError::new(2, msg.to_string()));
         }
 
         if config.regex_mode == RegexMode::Extended && has_empty_interval(pattern.as_bytes()) {
@@ -600,7 +597,10 @@ fn has_empty_interval(pattern: &[u8]) -> bool {
                 continue;
             }
             b'[' => {
-                i = scan_bracket(pattern, i + 1).1;
+                i = match scan_bracket(pattern, i + 1) {
+                    Ok((_, next)) => next,
+                    Err(_) => return false,
+                };
                 after_atom = true;
                 continue;
             }
@@ -617,32 +617,56 @@ fn has_empty_interval(pattern: &[u8]) -> bool {
 }
 
 /// True when `pattern` holds a bracket expression that looks like a misspelled
-/// character class, e.g. `[:space:]` instead of `[[:space:]]`. GNU grep rejects
-/// those: a bracket whose first and last characters are colons, that holds at
-/// least one other character, and that contains no range, class, equivalence
-/// class or collating element.
-fn has_confusing_bracket(pattern: &[u8]) -> bool {
+fn is_posix_char_class(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"alnum"
+            | b"alpha"
+            | b"blank"
+            | b"cntrl"
+            | b"digit"
+            | b"graph"
+            | b"lower"
+            | b"print"
+            | b"punct"
+            | b"space"
+            | b"upper"
+            | b"xdigit"
+    )
+}
+
+/// Validate bracket expressions in BRE/ERE patterns:
+/// - Reject `[:space:]` used without outer `[...]`
+/// - Reject non-POSIX `[:name:]` classes
+/// - Reject unclosed `[:`, `[.`, `[=` subexpressions inside `[...]`
+fn check_brackets(pattern: &[u8]) -> Result<(), &'static str> {
     let mut i = 0;
     while i < pattern.len() {
         match pattern[i] {
             b'\\' => i += 2,
             b'[' => {
-                let (confusing, next) = scan_bracket(pattern, i + 1);
+                let (confusing, next) = scan_bracket(pattern, i + 1)?;
                 if confusing {
-                    return true;
+                    return Err("character class syntax is [[:space:]], not [:space:]");
                 }
                 i = next;
             }
             _ => i += 1,
         }
     }
-    false
+    Ok(())
+}
+
+#[cfg(test)]
+fn has_confusing_bracket(pattern: &[u8]) -> bool {
+    check_brackets(pattern) == Err("character class syntax is [[:space:]], not [:space:]")
 }
 
 /// Scan the body of a bracket expression starting at `start` (just past the
 /// `[`). Returns whether it is a misspelled character class and the index just
-/// past its closing `]`.
-fn scan_bracket(pattern: &[u8], start: usize) -> (bool, usize) {
+/// past its closing `]`, or a GNU-compatible diagnostic on invalid/unclosed
+/// `[:...:]`, `[....]`, `[=...=]` subexpressions.
+fn scan_bracket(pattern: &[u8], start: usize) -> Result<(bool, usize), &'static str> {
     const FIRST_IS_COLON: u8 = 1;
     const LAST_IS_COLON: u8 = 2;
     const HAS_OTHER: u8 = 4;
@@ -662,18 +686,22 @@ fn scan_bracket(pattern: &[u8], start: usize) -> (bool, usize) {
         let c = pattern[i];
         // A `]` right at the start of the body is an ordinary character.
         if c == b']' && i != body_start {
-            return (state == FIRST_IS_COLON | LAST_IS_COLON | HAS_OTHER, i + 1);
+            return Ok((state == FIRST_IS_COLON | LAST_IS_COLON | HAS_OTHER, i + 1));
         }
         // Only the character just before the closing `]` counts as the last one.
         state &= !LAST_IS_COLON;
         // `[:alpha:]`, `[.a.]` and `[=a=]` inside the bracket.
         if c == b'[' && matches!(pattern.get(i + 1), Some(b':' | b'.' | b'=')) {
             let delimiter = pattern[i + 1];
-            if let Some(end) = find_bracket_subexpr_end(pattern, i + 2, delimiter) {
-                state |= HAS_RANGE_OR_CLASS;
-                i = end;
-                continue;
+            let Some(end) = find_bracket_subexpr_end(pattern, i + 2, delimiter) else {
+                return Err("Unmatched [, [^, [:, [., or [=");
+            };
+            if delimiter == b':' && !is_posix_char_class(&pattern[i + 2..end - 2]) {
+                return Err("Invalid character class name");
             }
+            state |= HAS_RANGE_OR_CLASS;
+            i = end;
+            continue;
         }
         // `x-y` is a range, but the `-` of `[x-]` is an ordinary character.
         if pattern.get(i + 1) == Some(&b'-')
@@ -687,7 +715,7 @@ fn scan_bracket(pattern: &[u8], start: usize) -> (bool, usize) {
         i += 1;
     }
     // Unterminated bracket: the regex engine reports that on its own.
-    (false, pattern.len())
+    Ok((false, pattern.len()))
 }
 
 /// Index just past the `:]`, `.]` or `=]` closing a `[: [. [=` subexpression
