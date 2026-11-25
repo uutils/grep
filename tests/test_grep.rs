@@ -2712,18 +2712,18 @@ fn rejects_invalid_character_class_names() {
     ];
     for (pattern, message) in cases {
         for mode in ["-G", "-E"] {
-            let (_s, mut c) = ucmd();
-            c.args(&[mode, pattern])
-                .pipe_in("7\n:]\n")
+            let (scene, mut c) = ucmd();
+            scene.fixtures.write("input", "7\n:]\n");
+            c.args(&[mode, pattern, "input"])
                 .fails_with_code(2)
                 .no_stdout()
                 .stderr_contains(message);
         }
     }
     // The twelve POSIX names keep working.
-    let (_s, mut c) = ucmd();
-    c.args(&["[[:xdigit:]]"])
-        .pipe_in("f\nz\n")
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("valid", "f\nz\n");
+    c.args(&["[[:xdigit:]]", "valid"])
         .succeeds()
         .stdout_only("f\n");
 }
