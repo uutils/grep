@@ -2697,3 +2697,46 @@ fn diagnostics_follow_earlier_output() {
         "a.txt:foo a\ngrep: bin.dat: binary file matches\ngrep: missing.txt: No such file or directory\nb.txt:foo b\n"
     );
 }
+
+#[test]
+fn grep_colors_selected_and_context_line() {
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLORS", "sl=1:cx=2")
+        .args(&["--color=always", "-A1", "foo"])
+        .pipe_in("foo bar\nbaz\n")
+        .succeeds()
+        .stdout_only(
+            "\x1b[1m\x1b[K\x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\x1b[1m\x1b[K bar\x1b[m\x1b[K\n\
+             \x1b[2m\x1b[Kbaz\x1b[m\x1b[K\n",
+        );
+
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLORS", "sl=1:cx=2:rv")
+        .args(&["--color=always", "-v", "-B1", "baz"])
+        .pipe_in("foo bar\nbaz\n")
+        .succeeds()
+        .stdout_only("\x1b[2m\x1b[Kfoo bar\x1b[m\x1b[K\n");
+
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLORS", "sl=1:cx=2")
+        .args(&["--color=always", "-v", "-B1", "baz"])
+        .pipe_in("foo bar\nbaz\n")
+        .succeeds()
+        .stdout_only("\x1b[1m\x1b[Kfoo bar\x1b[m\x1b[K\n");
+
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLORS", "sl=1")
+        .args(&["--color=always", "foo"])
+        .pipe_in("a foo b\n")
+        .succeeds()
+        .stdout_only(
+            "\x1b[1m\x1b[Ka \x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\x1b[1m\x1b[K b\x1b[m\x1b[K\n",
+        );
+
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLORS", "sl=1:cx=2")
+        .args(&["--color=always", "-o", "foo"])
+        .pipe_in("foo bar\n")
+        .succeeds()
+        .stdout_only("\x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\n");
+}
