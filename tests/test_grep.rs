@@ -331,6 +331,43 @@ fn ere_leading_repeat_operators_warn_and_match_empty(#[case] pattern: &str, #[ca
 }
 
 #[test]
+fn ere_repeat_operator_after_group_or_alternation_matches_empty() {
+    let cases = [
+        ("b|*a", "*a\na\nb\nc\n", "*a\na\nb\n"),
+        ("(*a)", "*a\na\nb\n", "*a\na\n"),
+        ("q|*z", "*z\nz\nq\nw\n", "*z\nz\nq\n"),
+        ("(+z)", "*z\nz\nw\n", "*z\nz\n"),
+        ("x|?y", "y\nx\nz\n", "y\nx\n"),
+        ("b|{2,3}a", "b\na\nc\n", "b\na\n"),
+        ("x|**y", "y\nx\nz\n", "y\nx\n"),
+        ("(**z)", "z\nw\n", "z\n"),
+    ];
+    for (pattern, input, expected) in cases {
+        let (_s, mut c) = ucmd();
+        c.args(&["-E", pattern])
+            .pipe_in(input)
+            .succeeds()
+            .stdout_is(expected)
+            .stderr_contains("at start of expression");
+    }
+
+    // Literal escapes and bracket expressions are not repeat operators.
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", r"b|\*a"])
+        .pipe_in("*a\na\nb\n")
+        .succeeds()
+        .stdout_is("*a\nb\n")
+        .no_stderr();
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", r"(\*a)"])
+        .pipe_in("*a\na\n")
+        .succeeds()
+        .stdout_is("*a\n")
+        .no_stderr();
+}
+
+#[test]
 fn bre_leading_star_is_literal() {
     let (_s, mut c) = ucmd();
     c.args(&["*foo"])
