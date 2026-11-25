@@ -66,20 +66,21 @@ impl<'a> Matcher<'a> {
         let mut any_seen = false;
         let mut any_selected = false;
         let positions: Vec<_> = MatchIter::new(&self.patterns, line)
-            .filter(|&(start, end)| {
+            .filter(|m| {
                 any_seen = true;
                 // Drop matches that don't span the whole line if `-x` was requested.
-                if self.config.line_regexp && !(start == 0 && end == line.len()) {
+                if self.config.line_regexp && !(m.match_start == 0 && m.end == line.len()) {
                     return false;
                 }
                 // Drop matches that aren't word matches if `-w` was requested.
-                if self.config.word_regexp && !Self::is_word_match(line, start, end) {
+                if self.config.word_regexp && !Self::is_word_match(line, m.match_start, m.end) {
                     return false;
                 }
                 any_selected = true;
                 // Drop zero-length matches from the output.
-                start != end
+                m.report_start != m.end
             })
+            .map(|m| (m.report_start, m.end))
             .collect();
 
         let raw_matched = if self.config.line_regexp || self.config.word_regexp {
@@ -140,6 +141,15 @@ impl<'a> Matcher<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct MatchSpan {
+    /// Start of the full regex match (before `\K`, used for `-w`/`-x` checks).
+    match_start: usize,
+    /// Start of the reported match (after `\K`, used for `-o`/highlighting).
+    report_start: usize,
+    end: usize,
+}
+
 /// Streaming k-way merge over compiled patterns
 struct MatchIter<'a> {
     cursors: Vec<Cursor<'a>>,
@@ -169,12 +179,12 @@ impl<'a> MatchIter<'a> {
 }
 
 impl<'a> Iterator for MatchIter<'a> {
-    type Item = (usize, usize);
+    type Item = MatchSpan;
 
     fn next(&mut self) -> Option<Self::Item> {
         // Discard stale pendings that fall before the last emit.
         for cursor in &mut self.cursors {
-            if matches!(cursor.pending, Some((s, _)) if s < self.last_end) {
+            if matches!(cursor.pending, Some(m) if m.match_start < self.last_end) {
                 cursor.offset = self.last_end;
                 cursor.refill();
             }
@@ -188,13 +198,13 @@ impl<'a> Iterator for MatchIter<'a> {
             .iter()
             .enumerate()
             .filter_map(|(i, c)| c.pending.map(|p| (i, p)))
-            .min_by_key(|&(_, (s, e))| (s, std::cmp::Reverse(e)))
+            .min_by_key(|&(_, m)| (m.match_start, std::cmp::Reverse(m.end)))
             .map(|(i, _)| i)?;
 
-        let (start, end) = self.cursors[best_idx].pending.unwrap();
+        let span = self.cursors[best_idx].pending.unwrap();
         self.cursors[best_idx].refill();
-        self.last_end = end;
-        Some((start, end))
+        self.last_end = span.end;
+        Some(span)
     }
 }
 
@@ -205,7 +215,7 @@ struct Cursor<'a> {
     offset: usize,
     /// Pre-fetched next match for this pattern.
     /// `None` once the pattern is exhausted.
-    pending: Option<(usize, usize)>,
+    pending: Option<MatchSpan>,
 }
 
 impl Cursor<'_> {
@@ -214,24 +224,24 @@ impl Cursor<'_> {
             self.pending = None;
             return;
         }
-        let Some((start, leftmost_end)) = self.pattern.search_leftmost(self.line, self.offset)
-        else {
+        let Some(mut span) = self.pattern.search_leftmost(self.line, self.offset) else {
             self.pending = None;
             return;
         };
-        let end = self
-            .pattern
-            .longest_end_at(self.line, start)
-            .unwrap_or(leftmost_end);
+        if let Some((report_start, end)) = self.pattern.longest_end_at(self.line, span.match_start)
+        {
+            span.report_start = report_start;
+            span.end = end;
+        }
         // Advance the next search past the match we just found.
         // Zero-length matches advance past the current character to avoid
         // spinning forever and to prevent resuming in the middle of a multi-byte sequence.
-        self.offset = if end > start {
-            end
+        self.offset = if span.end > span.match_start {
+            span.end
         } else {
-            start + utf8_char_step(self.line, start)
+            span.match_start + utf8_char_step(self.line, span.match_start)
         };
-        self.pending = Some((start, end));
+        self.pending = Some(span);
     }
 }
 
@@ -399,19 +409,24 @@ impl CompiledPattern {
     }
 
     /// Find the leftmost match starting at or after `offset`.
-    fn search_leftmost(&self, line: &[u8], offset: usize) -> Option<(usize, usize)> {
+    fn search_leftmost(&self, line: &[u8], offset: usize) -> Option<MatchSpan> {
         let mut region = Region::new();
-        self.leftmost.search(line, offset, Some(&mut region))?;
-        region.pos(0)
+        let match_start = self.leftmost.search(line, offset, Some(&mut region))?;
+        let (report_start, end) = region.pos(0)?;
+        Some(MatchSpan {
+            match_start,
+            report_start,
+            end,
+        })
     }
 
-    /// Given a known leftmost start `start`, return the longest extent
-    /// of a match anchored exactly there = POSIX leftmost-longest end.
-    fn longest_end_at(&self, line: &[u8], start: usize) -> Option<usize> {
+    /// Given a known leftmost start `match_start`, return the longest extent's
+    /// reported `(report_start, end)` anchored exactly there = POSIX leftmost-longest end.
+    fn longest_end_at(&self, line: &[u8], match_start: usize) -> Option<(usize, usize)> {
         let mut region = Region::new();
         self.longest_anchored
-            .match_at(line, start, Some(&mut region));
-        region.pos(0).map(|(_, end)| end)
+            .match_at(line, match_start, Some(&mut region));
+        region.pos(0)
     }
 
     /// True if any match exists in `line` (including zero-length).

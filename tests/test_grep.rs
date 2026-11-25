@@ -394,6 +394,33 @@ fn repeated_matcher_flag_is_accepted() {
 }
 
 #[test]
+fn perl_keep_with_word_and_line_regexp() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-wP", r"foo\Kbar"])
+        .pipe_in("foobar\n")
+        .succeeds()
+        .stdout_only("foobar\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-owP", r"foo\Kbar"])
+        .pipe_in("foobar\n")
+        .succeeds()
+        .stdout_only("bar\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-xP", r"key=\K.*"])
+        .pipe_in("key=value\n")
+        .succeeds()
+        .stdout_only("key=value\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-wP", r"foo \Kbar"])
+        .pipe_in("xfoo bar\n")
+        .fails_with_code(1)
+        .no_output();
+}
+
+#[test]
 fn pcre_features() {
     let (_s, mut c) = ucmd();
     c.args(&["-P", r"\d+"])
