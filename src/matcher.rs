@@ -910,4 +910,21 @@ mod tests {
             assert!(!has_confusing_bracket(p.as_bytes()), "pattern {p:?}");
         }
     }
+
+    #[test]
+    fn normalizes_anchor_repeats_respecting_brackets_and_escapes() {
+        use super::normalize_anchor_repeats;
+
+        assert_eq!(normalize_anchor_repeats("[^*]jo"), None);
+        assert_eq!(normalize_anchor_repeats(r"\^*\$*"), None);
+        assert_eq!(
+            normalize_anchor_repeats(r"^*\^*[a]$"),
+            Some(r"^\^*[a]$".to_string())
+        );
+        assert_eq!(
+            normalize_anchor_repeats("a${0,2}b"),
+            Some("a($|)b".to_string())
+        );
+        assert_eq!(normalize_anchor_repeats("a${1,2}"), Some("a$".to_string()));
+    }
 }
