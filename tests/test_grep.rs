@@ -180,6 +180,24 @@ fn character_class_lookalike_is_valid(#[case] args: &[&str]) {
 }
 
 #[test]
+fn empty_interval_means_zero_or_more() {
+    for args in [&["-c", r"bz\{,\}"][..], &["-c", "-E", "bz{,}"][..]] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .pipe_in("b\nbzzz\nq\n")
+            .succeeds()
+            .stdout_only("2\n");
+    }
+
+    // Escaped braces and bracket expressions stay literal.
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", r"a\{,\}"])
+        .pipe_in("a{,}\na\n")
+        .succeeds()
+        .stdout_only("a{,}\n");
+}
+
+#[test]
 fn max_count_rewinds_seekable_stdin() {
     // -m stops mid-input after reading ahead. When standard input can seek,
     // the unread remainder must be left in place for the next reader.

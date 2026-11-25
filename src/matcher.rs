@@ -9,6 +9,7 @@ use onig::{RegexOptions, Region, SearchOptions, Syntax, SyntaxBehavior, SyntaxOp
 use onig_sys::{
     ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS, OnigEncCtype_ONIGENC_CTYPE_WORD, OnigEncodingUTF8,
 };
+use std::borrow::Cow;
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
 use uucore::error::{UResult, USimpleError};
@@ -333,16 +334,17 @@ impl CompiledPattern {
             ));
         }
 
+        let pattern = normalize_empty_intervals(pattern, config.regex_mode);
+        let mut pattern = pattern.as_ref();
+
         let mut normalized_pattern = None;
-        let pattern = if config.regex_mode == RegexMode::Extended {
+        if config.regex_mode == RegexMode::Extended {
             if let Some((op, rest)) = strip_leading_repeat_operator(pattern) {
                 show_warning!("{op} at start of expression");
                 normalized_pattern = Some(rest.to_string());
             }
-            normalized_pattern.as_deref().unwrap_or(pattern)
-        } else {
-            pattern
-        };
+            pattern = normalized_pattern.as_deref().unwrap_or(pattern);
+        }
 
         if config.regex_mode == RegexMode::Perl {
             // GNU grep supports `(?P<name>...)`.
@@ -561,6 +563,52 @@ fn onig_error_message(code: i32, info: *const onig_sys::OnigErrorInfo) -> String
     let mut buff = [0; onig_sys::ONIG_MAX_ERROR_MESSAGE_LEN as usize];
     let len = unsafe { onig_sys::onig_error_code_to_str(buff.as_mut_ptr(), code, info) };
     String::from_utf8_lossy(&buff[..len as usize]).into_owned()
+}
+
+/// GNU grep treats an interval with neither bound (`\{,\}` in BRE, `{,}` in ERE)
+/// as `{0,}`. Oniguruma requires at least one bound, so rewrite unescaped,
+/// out-of-bracket empty-bound intervals to `{0,}` before compilation.
+fn normalize_empty_intervals(pattern: &str, mode: RegexMode) -> Cow<'_, str> {
+    let needle = match mode {
+        RegexMode::Basic => "\\{,\\}",
+        RegexMode::Extended => "{,}",
+        RegexMode::Fixed | RegexMode::Perl => return Cow::Borrowed(pattern),
+    };
+    if !pattern.contains(needle) {
+        return Cow::Borrowed(pattern);
+    }
+
+    let bytes = pattern.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() + 4);
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => {
+                let next = scan_bracket(bytes, i + 1).1;
+                out.extend_from_slice(&bytes[i..next]);
+                i = next;
+            }
+            b'\\' => {
+                if mode == RegexMode::Basic && bytes[i..].starts_with(b"\\{,\\}") {
+                    out.extend_from_slice(b"\\{0,\\}");
+                    i += 5;
+                } else {
+                    let next = (i + 2).min(bytes.len());
+                    out.extend_from_slice(&bytes[i..next]);
+                    i = next;
+                }
+            }
+            b'{' if mode == RegexMode::Extended && bytes[i..].starts_with(b"{,}") => {
+                out.extend_from_slice(b"{0,}");
+                i += 3;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    Cow::Owned(String::from_utf8(out).expect("rewritten pattern stays valid UTF-8"))
 }
 
 fn strip_leading_repeat_operator(pattern: &str) -> Option<(&'static str, &str)> {
@@ -822,5 +870,36 @@ mod tests {
         ] {
             assert!(!has_confusing_bracket(p.as_bytes()), "pattern {p:?}");
         }
+    }
+
+    #[test]
+    fn normalizes_empty_bound_intervals_outside_brackets_and_escapes() {
+        use super::normalize_empty_intervals;
+
+        assert_eq!(
+            normalize_empty_intervals(r"a\{,\}", RegexMode::Basic),
+            r"a\{0,\}"
+        );
+        assert_eq!(
+            normalize_empty_intervals(r"a\\{,\}", RegexMode::Basic),
+            r"a\\{,\}"
+        );
+        assert_eq!(
+            normalize_empty_intervals(r"[a\{,\}]", RegexMode::Basic),
+            r"[a\{,\}]"
+        );
+        assert_eq!(
+            normalize_empty_intervals("a{,}", RegexMode::Extended),
+            "a{0,}"
+        );
+        assert_eq!(
+            normalize_empty_intervals(r"a\{,\}", RegexMode::Extended),
+            r"a\{,\}"
+        );
+        assert_eq!(
+            normalize_empty_intervals("[{,}]", RegexMode::Extended),
+            "[{,}]"
+        );
+        assert_eq!(normalize_empty_intervals("a{,}", RegexMode::Perl), "a{,}");
     }
 }
