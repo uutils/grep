@@ -335,9 +335,8 @@ impl CompiledPattern {
 
         let mut normalized_pattern = None;
         let pattern = if config.regex_mode == RegexMode::Extended {
-            if let Some((op, rest)) = strip_leading_repeat_operator(pattern) {
-                show_warning!("{op} at start of expression");
-                normalized_pattern = Some(rest.to_string());
+            if let Some(rewritten) = normalize_ere_repeat_operators(pattern) {
+                normalized_pattern = Some(rewritten);
             }
             normalized_pattern.as_deref().unwrap_or(pattern)
         } else {
@@ -563,23 +562,106 @@ fn onig_error_message(code: i32, info: *const onig_sys::OnigErrorInfo) -> String
     String::from_utf8_lossy(&buff[..len as usize]).into_owned()
 }
 
-fn strip_leading_repeat_operator(pattern: &str) -> Option<(&'static str, &str)> {
-    match pattern.as_bytes().first()? {
-        b'?' => Some(("?", &pattern[1..])),
-        b'*' => Some(("*", &pattern[1..])),
-        b'+' => Some(("+", &pattern[1..])),
-        b'{' => strip_leading_interval_repeat(pattern).map(|rest| ("{...}", rest)),
+/// Rewrite ERE repeat operators with nothing to repeat (at start of expression,
+/// or immediately following `(` or `|`).
+///
+/// In -E mode GNU grep accepts `*`, `+`, `?` or `{m,n}` with nothing to repeat
+/// anywhere an expression starts, warns `<op> at start of expression`, treats
+/// the operator as matching the empty string, and continues matching.
+fn normalize_ere_repeat_operators(pattern: &str) -> Option<String> {
+    let bytes = pattern.as_bytes();
+    if !bytes
+        .iter()
+        .any(|&b| matches!(b, b'*' | b'+' | b'?' | b'{'))
+    {
+        return None;
+    }
+
+    let mut out: Option<Vec<u8>> = None;
+    let mut i = 0;
+    let mut at_start = true;
+
+    while i < bytes.len() {
+        if at_start && let Some((op, op_len)) = match_repeat_operator(&bytes[i..]) {
+            show_warning!("{op} at start of expression");
+            if out.is_none() {
+                let mut buf = Vec::with_capacity(bytes.len());
+                buf.extend_from_slice(&bytes[..i]);
+                out = Some(buf);
+            }
+            i += op_len;
+            // Still at start of expression for any subsequent repeat operator (e.g. `**a`).
+            continue;
+        }
+
+        match bytes[i] {
+            b'\\' => {
+                let next = (i + 2).min(bytes.len());
+                if let Some(buf) = out.as_mut() {
+                    buf.extend_from_slice(&bytes[i..next]);
+                }
+                i = next;
+                at_start = false;
+            }
+            b'[' => {
+                let (_, next) = scan_bracket(bytes, i + 1);
+                if let Some(buf) = out.as_mut() {
+                    buf.extend_from_slice(&bytes[i..next]);
+                }
+                i = next;
+                at_start = false;
+            }
+            b'(' => {
+                if let Some(buf) = out.as_mut() {
+                    buf.push(b'(');
+                }
+                i += 1;
+                at_start = true;
+            }
+            b'|' => {
+                if let Some(buf) = out.as_mut() {
+                    buf.push(b'|');
+                }
+                i += 1;
+                at_start = true;
+            }
+            b')' => {
+                if let Some(buf) = out.as_mut() {
+                    buf.push(b')');
+                }
+                i += 1;
+                at_start = false;
+            }
+            c => {
+                if let Some(buf) = out.as_mut() {
+                    buf.push(c);
+                }
+                i += 1;
+                at_start = false;
+            }
+        }
+    }
+
+    out.map(|buf| String::from_utf8(buf).expect("pattern is valid UTF-8"))
+}
+
+fn match_repeat_operator(slice: &[u8]) -> Option<(&'static str, usize)> {
+    match slice.first()? {
+        b'*' => Some(("*", 1)),
+        b'+' => Some(("+", 1)),
+        b'?' => Some(("?", 1)),
+        b'{' => match_interval_repeat(slice).map(|len| ("{...}", len)),
         _ => None,
     }
 }
 
-fn strip_leading_interval_repeat(pattern: &str) -> Option<&str> {
-    let close = pattern.as_bytes().iter().position(|&b| b == b'}')?;
-    let body = &pattern[1..close];
+fn match_interval_repeat(slice: &[u8]) -> Option<usize> {
+    let close = slice.iter().position(|&b| b == b'}')?;
+    let body = &slice[1..close];
     let is_interval = !body.is_empty()
-        && body.bytes().all(|b| b.is_ascii_digit() || b == b',')
-        && body.bytes().any(|b| b.is_ascii_digit());
-    is_interval.then_some(&pattern[close + 1..])
+        && body.iter().all(|&b| b.is_ascii_digit() || b == b',')
+        && body.iter().any(|&b| b.is_ascii_digit());
+    is_interval.then_some(close + 1)
 }
 
 /// Whether the extended `pattern` has an empty interval `{}` after something it
@@ -822,5 +904,45 @@ mod tests {
         ] {
             assert!(!has_confusing_bracket(p.as_bytes()), "pattern {p:?}");
         }
+    }
+
+    #[test]
+    fn normalizes_ere_repeat_operators_at_start_of_expression() {
+        use super::normalize_ere_repeat_operators;
+
+        assert_eq!(
+            normalize_ere_repeat_operators("b|*a"),
+            Some("b|a".to_string())
+        );
+        assert_eq!(
+            normalize_ere_repeat_operators("(*a)"),
+            Some("(a)".to_string())
+        );
+        assert_eq!(
+            normalize_ere_repeat_operators("x|+a"),
+            Some("x|a".to_string())
+        );
+        assert_eq!(
+            normalize_ere_repeat_operators("a|?b"),
+            Some("a|b".to_string())
+        );
+        assert_eq!(
+            normalize_ere_repeat_operators("b|{2,3}a"),
+            Some("b|a".to_string())
+        );
+        assert_eq!(normalize_ere_repeat_operators("**a"), Some("a".to_string()));
+        assert_eq!(
+            normalize_ere_repeat_operators("(**a)"),
+            Some("(a)".to_string())
+        );
+        assert_eq!(
+            normalize_ere_repeat_operators("b|**a"),
+            Some("b|a".to_string())
+        );
+        assert_eq!(normalize_ere_repeat_operators("b|\\*a"), None);
+        assert_eq!(normalize_ere_repeat_operators("b|[*]a"), None);
+        assert_eq!(normalize_ere_repeat_operators("b|{}a"), None);
+        assert_eq!(normalize_ere_repeat_operators("a|b*c"), None);
+        assert_eq!(normalize_ere_repeat_operators("(a)*b"), None);
     }
 }
