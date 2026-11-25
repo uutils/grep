@@ -237,7 +237,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let context = matches.get_one::<usize>("context").copied();
     let group_separator = matches
         .get_one::<String>("group_separator")
-        .map_or("--", |s| s.as_str());
+        .map(|s| s.as_str());
     let no_group_separator = matches.get_flag("no_group_separator");
     // Color output requires an explicit --color option.
     let color = matches
@@ -427,7 +427,11 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
             _ => true,
         }
     };
-    let group_separator = (!no_group_separator).then_some(group_separator);
+    let group_separator = if no_group_separator {
+        None
+    } else {
+        Some(group_separator.unwrap_or("--"))
+    };
     let use_color = match color {
         ColorMode::Always => true,
         ColorMode::Never => false,
@@ -741,20 +745,23 @@ pub fn uu_app() -> Command {
                 .long("binary-files")
                 .value_name("TYPE")
                 .help("assume that binary files are TYPE; TYPE is 'binary', 'text', or 'without-match'")
-                .value_parser(["binary", "text", "without-match"]),
+                .value_parser(["binary", "text", "without-match"])
+                .overrides_with_all(["text", "skip_binary"]),
         )
         .arg(
             Arg::new("text")
                 .short('a')
                 .long("text")
                 .help("equivalent to --binary-files=text")
-                .action(ArgAction::SetTrue),
+                .action(ArgAction::SetTrue)
+                .overrides_with_all(["binary_files", "skip_binary"]),
         )
         .arg(
             Arg::new("skip_binary")
                 .short('I')
                 .help("equivalent to --binary-files=without-match")
-                .action(ArgAction::SetTrue),
+                .action(ArgAction::SetTrue)
+                .overrides_with_all(["binary_files", "text"]),
         )
         .arg(
             Arg::new("directories")
@@ -762,7 +769,8 @@ pub fn uu_app() -> Command {
                 .long("directories")
                 .value_name("ACTION")
                 .help("how to handle directories; ACTION is 'read', 'recurse', or 'skip'")
-                .value_parser(["read", "skip", "recurse"]),
+                .value_parser(["read", "skip", "recurse"])
+                .overrides_with_all(["recursive", "dereference_recursive"]),
         )
         .arg(
             Arg::new("devices")
@@ -777,14 +785,16 @@ pub fn uu_app() -> Command {
                 .short('r')
                 .long("recursive")
                 .help("like --directories=recurse")
-                .action(ArgAction::SetTrue),
+                .action(ArgAction::SetTrue)
+                .overrides_with_all(["directories", "dereference_recursive"]),
         )
         .arg(
             Arg::new("dereference_recursive")
                 .short('R')
                 .long("dereference-recursive")
                 .help("likewise, but follow all symlinks")
-                .action(ArgAction::SetTrue),
+                .action(ArgAction::SetTrue)
+                .overrides_with_all(["directories", "recursive"]),
         )
         .arg(
             Arg::new("include")
@@ -886,13 +896,15 @@ pub fn uu_app() -> Command {
                 .value_name("SEP")
                 .help("print SEP on line between matches with context")
                 .default_value("--")
-                .allow_hyphen_values(true),
+                .allow_hyphen_values(true)
+                .overrides_with("no_group_separator"),
         )
         .arg(
             Arg::new("no_group_separator")
                 .long("no-group-separator")
                 .help("do not print separator for matches with context")
-                .action(ArgAction::SetTrue),
+                .action(ArgAction::SetTrue)
+                .overrides_with("group_separator"),
         )
         .arg(
             Arg::new("color")
