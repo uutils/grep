@@ -2697,3 +2697,58 @@ fn diagnostics_follow_earlier_output() {
         "a.txt:foo a\ngrep: bin.dat: binary file matches\ngrep: missing.txt: No such file or directory\nb.txt:foo b\n"
     );
 }
+#[test]
+fn null_data_anchors_are_record_anchors() {
+    for args in [
+        &["-z", "-c", "^two"][..],
+        &["-z", "-c", "one$"][..],
+        &["-z", "-c", "-E", "one$"][..],
+        &["-z", "-c", "-P", "one$"][..],
+        &["-z", "-c", "^beta"][..],
+        &["-z", "-c", "-E", "alpha$"][..],
+        &["-z", "-c", "beta$"][..],
+        &["-z", "-c", "-E", "beta$"][..],
+        &["-z", "-c", "-P", "beta$"][..],
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .pipe_in("alpha\nbeta\n\0")
+            .fails_with_code(1)
+            .stdout_only("0\n");
+    }
+
+    for args in [
+        &["-z", "-c", "^alpha"][..],
+        &["-z", "-c", "-E", "^alpha"][..],
+        &["-z", "-c", "-P", "^alpha"][..],
+        &["-z", "-c", "beta$"][..],
+        &["-z", "-c", "-E", "beta$"][..],
+        &["-z", "-c", "-P", "beta$"][..],
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .pipe_in("alpha\nbeta\0")
+            .succeeds()
+            .stdout_only("1\n");
+    }
+
+    // Record with trailing newline matches newline before anchor
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", "\n$"])
+        .pipe_in("alpha\nbeta\n\0")
+        .succeeds()
+        .stdout_only("1\n");
+
+    // Escaped and bracketed dollar remains literal
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", "foo\\$bar"])
+        .pipe_in("foo$bar\0")
+        .succeeds()
+        .stdout_only("1\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", "foo[$]bar"])
+        .pipe_in("foo$bar\0")
+        .succeeds()
+        .stdout_only("1\n");
+}
