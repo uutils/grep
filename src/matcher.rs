@@ -354,11 +354,34 @@ impl CompiledPattern {
                 SyntaxOperator::SYNTAX_OPERATOR_QMARK_CAPITAL_P_NAME.bits() << 32,
             );
             syntax.enable_operators(FIXED);
+
+            // GNU grep -P compatibility adjustments:
+            // 1. Enable ONIG_SYN_DIFFERENT_LEN_ALT_LOOK_BEHIND for (?<=a|bc).
+            // 2. Disable ONIG_SYN_CAPTURE_ONLY_NAMED_GROUP so numbered backrefs (\1)
+            //    work even when named capture groups are present.
+            // 3. Retain ONIG_SYN_ISOLATED_OPTION_CONTINUE_BRANCH (the (?i) case).
+            //
+            // Note: We cannot use `syntax.enable_behavior()` / `syntax.disable_behavior()`
+            // because `syntax.behavior()` internally uses `SyntaxBehavior::from_bits_truncate()`.
+            // That drops any bits not declared in `onig::SyntaxBehavior` (such as `0x88000000`
+            // and `ONIG_SYN_ISOLATED_OPTION_CONTINUE_BRANCH` in Perl syntax), stripping them
+            // on writeback and breaking `(?i)`. Reading the full bitmask directly and writing back
+            // via `SyntaxBehavior::from_bits_retain()` preserves all bits.
+            let raw_syntax = &raw mut syntax as *mut onig_sys::OnigSyntaxType;
+            let mut behavior = unsafe { onig_sys::onig_get_syntax_behavior(raw_syntax) };
+            behavior |= onig_sys::ONIG_SYN_ISOLATED_OPTION_CONTINUE_BRANCH;
+            behavior |= onig_sys::ONIG_SYN_DIFFERENT_LEN_ALT_LOOK_BEHIND;
+            behavior &= !onig_sys::ONIG_SYN_CAPTURE_ONLY_NAMED_GROUP;
+            syntax.set_behavior(SyntaxBehavior::from_bits_retain(behavior));
         }
 
         let mut options = RegexOptions::REGEX_OPTION_NONE;
         if config.ignore_case {
             options |= RegexOptions::REGEX_OPTION_IGNORECASE;
+        }
+        if config.regex_mode == RegexMode::Perl {
+            // In GNU grep -P, \d matches only ASCII digits [0-9].
+            options |= RegexOptions::from_bits_retain(onig_sys::ONIG_OPTION_DIGIT_IS_ASCII);
         }
         // In GNU grep's Basic/Extended modes, `-z` makes newline ordinary data
         // for `.` and negated bracket expressions `[^...]`, but PCRE keeps its

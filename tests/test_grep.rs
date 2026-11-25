@@ -414,6 +414,34 @@ fn pcre_features() {
         .pipe_in("v=42\nv=7x\n")
         .succeeds()
         .stdout_only("42\n7\n");
+
+    // Inline (?i) carries over across alternatives.
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", "a(?i)b|c"])
+        .pipe_in("C\n")
+        .succeeds()
+        .stdout_only("C\n");
+
+    // Lookbehind with alternatives of different lengths.
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", "-o", r"(?<=Host: |host=)\w+"])
+        .pipe_in("Host: one\nhost=two\n")
+        .succeeds()
+        .stdout_only("one\ntwo\n");
+
+    // Numbered backreference alongside named capture group.
+    let (_s, mut c) = ucmd();
+    c.args(&["-P", r"(?<w>\w+) \1"])
+        .pipe_in("ab ab\nab cd\n")
+        .succeeds()
+        .stdout_only("ab ab\n");
+
+    // \d matches only ASCII digits, not non-ASCII digits like U+0660.
+    let (_s, mut c) = ucmd();
+    c.args(&["-cP", r"\d"])
+        .pipe_in("\u{0660}\n")
+        .fails_with_code(1)
+        .stdout_only("0\n");
 }
 
 #[test]
