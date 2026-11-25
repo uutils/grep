@@ -12,7 +12,11 @@ use std::ffi::OsStr;
 use std::path::{Path, is_separator};
 use std::str::Chars;
 
-const SEPARATOR: &str = if cfg!(windows) { r"[/\\]" } else { "/" };
+const SEPARATOR: &str = if cfg!(any(windows, target_os = "cygwin")) {
+    r"[/\\]"
+} else {
+    "/"
+};
 
 /// Include and exclude patterns, in command-line order. The last matching
 /// pattern decides; otherwise, skip only if the first pattern is an include.
@@ -148,7 +152,7 @@ fn translate_class(chars: &mut Chars<'_>, out: &mut String) -> Option<()> {
                     out.push_str(r"\[");
                 }
             }
-            '/' if cfg!(windows) => {
+            '/' if cfg!(any(windows, target_os = "cygwin")) => {
                 out.push('/');
                 separator = true;
             }
@@ -279,7 +283,7 @@ mod tests {
         assert!(!excluding("").skips_command_line_file(Path::new("t/")));
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "cygwin"))]
     #[test]
     fn windows_path_separators() {
         let globs = excluding("t/*.txt");
