@@ -94,6 +94,35 @@ fn ere_invalid_pattern_is_error() {
 }
 
 #[test]
+fn ere_repeat_after_anchor() {
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", "^*jo"])
+        .pipe_in("jo\nxjo\n")
+        .succeeds()
+        .stdout_is("jo\n")
+        .stderr_contains("* at start of expression");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", "(^+jo)"])
+        .pipe_in("jo\nx\n")
+        .succeeds()
+        .stdout_is("jo\n")
+        .stderr_contains("+ at start of expression");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", "jo$+"])
+        .pipe_in("jo\njon\n")
+        .succeeds()
+        .stdout_only("jo\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", "jo$*"])
+        .pipe_in("jo\njon\nx\n")
+        .succeeds()
+        .stdout_only("jo\njon\n");
+}
+
+#[test]
 fn ere_unmatched_close_paren_is_literal() {
     let (_s, mut c) = ucmd();
     c.args(&["-E", "a)"])
