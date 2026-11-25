@@ -349,30 +349,32 @@ impl<'a> Searcher<'a> {
         let mut count: u64 = 0;
         let mut matched = false;
         let mut read_error = None;
-        'outer: loop {
-            let (chunk, chunk_off) = match lb.read_chunk(reader) {
-                Ok(Some(chunk)) => chunk,
-                Ok(None) => break,
-                Err(err) => {
-                    read_error = Some(err);
-                    break;
-                }
-            };
-            let mut p = 0;
-            while p < chunk.len() {
-                let Some(rel) = leftmost_match(finders, &chunk[p..]) else {
-                    break;
+        if max != Some(0) {
+            'outer: loop {
+                let (chunk, chunk_off) = match lb.read_chunk(reader) {
+                    Ok(Some(chunk)) => chunk,
+                    Ok(None) => break,
+                    Err(err) => {
+                        read_error = Some(err);
+                        break;
+                    }
                 };
-                let (_, line_end) = line_bounds(chunk, p + rel);
-                count += 1;
-                matched = true;
-                // Each line counts once: resume past this line's terminator.
-                p = line_end + 1;
-                self.session_last_match_end = chunk_off + p as u64;
-                // Stop as soon as the limit is reached: reading on would block
-                // on input that stays open, such as a pipe from `tail -f`.
-                if stop_at_first || max.is_some_and(|mx| count >= mx) {
-                    break 'outer;
+                let mut p = 0;
+                while p < chunk.len() {
+                    let Some(rel) = leftmost_match(finders, &chunk[p..]) else {
+                        break;
+                    };
+                    let (_, line_end) = line_bounds(chunk, p + rel);
+                    count += 1;
+                    matched = true;
+                    // Each line counts once: resume past this line's terminator.
+                    p = line_end + 1;
+                    self.session_last_match_end = chunk_off + p as u64;
+                    // Stop as soon as the limit is reached: reading on would block
+                    // on input that stays open, such as a pipe from `tail -f`.
+                    if stop_at_first || max.is_some_and(|mx| count >= mx) {
+                        break 'outer;
+                    }
                 }
             }
         }
