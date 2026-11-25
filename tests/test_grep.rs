@@ -2609,6 +2609,13 @@ fn exclude_dir_does_not_apply_to_implicit_cwd() {
 
     let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
     c.current_dir(scene.fixtures.plus("flat"))
+        .args(&["-r", "--exclude-dir=.", "grep"])
+        .succeeds()
+        .stdout_contains(".hidden/h.txt:grep me\n")
+        .stdout_contains("only.txt:grep me\n");
+
+    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    c.current_dir(scene.fixtures.plus("flat"))
         .args(&["-r", "--exclude-dir=.", "grep", "."])
         .fails_with_code(1)
         .no_output();
