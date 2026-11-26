@@ -2647,6 +2647,46 @@ fn only_matching_empty_match_does_not_split_utf8() {
         ));
 }
 
+#[test]
+fn byte_locales_match_single_bytes() {
+    // In C and POSIX every byte is a character, so `.` matches one byte of `é`.
+    for locale in ["C", "POSIX"] {
+        let (_s, mut c) = ucmd();
+        c.env("LC_ALL", locale)
+            .env("LC_CTYPE", "C.UTF-8")
+            .env("LANG", "C.UTF-8")
+            .args(&["-o", "caf."])
+            .pipe_in("caf\u{e9}\n")
+            .succeeds()
+            .stdout_only_bytes(&b"caf\xc3\n"[..]);
+
+        let (_s, mut c) = ucmd();
+        c.env("LC_ALL", "")
+            .env("LC_CTYPE", locale)
+            .env("LANG", "C.UTF-8")
+            .args(&["-o", "caf."])
+            .pipe_in("caf\u{e9}\n")
+            .succeeds()
+            .stdout_only_bytes(&b"caf\xc3\n"[..]);
+    }
+
+    // With no C/POSIX setting the pattern is still matched as UTF-8.
+    let (_s, mut c) = ucmd();
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-o", "caf."])
+        .pipe_in("caf\u{e9}\n")
+        .succeeds()
+        .stdout_only("caf\u{e9}\n");
+
+    // `-w` looks at the byte after the match: \xc3 is not a word character in C.
+    let (_s, mut c) = ucmd();
+    c.env("LC_ALL", "C")
+        .args(&["-c", "-w", "caf"])
+        .pipe_in("caf\u{e9}\n")
+        .succeeds()
+        .stdout_only("1\n");
+}
+
 // A pattern is matched against the operand as written and against paths
 // relative to it; one with a slash must match that whole path.
 #[rstest]
