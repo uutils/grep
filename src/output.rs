@@ -94,6 +94,18 @@ impl<'a> OutputWriter<'a> {
             view.line.is_empty(),
         )?;
 
+        let swap = self.config.invert_match && self.config.color_config.reverse_video;
+        let line_color = if view.is_match ^ swap {
+            self.config.color_config.selected_line
+        } else {
+            self.config.color_config.context_line
+        };
+        let has_line_color = self.config.use_color && !line_color.is_empty();
+
+        if has_line_color {
+            self.write_colored_prefix(line_color)?;
+        }
+
         let mut last_end = 0;
 
         if self.config.use_color && view.is_match && !view.match_positions.is_empty() {
@@ -107,6 +119,9 @@ impl<'a> OutputWriter<'a> {
                         self.config.color_config.matched_selected,
                         match_bytes,
                     )?;
+                    if has_line_color {
+                        self.write_colored_prefix(line_color)?;
+                    }
                 }
                 last_end = end;
             }
@@ -114,6 +129,10 @@ impl<'a> OutputWriter<'a> {
 
         if last_end < view.line.len() {
             self.out.write_all(&view.line[last_end..])?;
+        }
+
+        if has_line_color {
+            self.write_colored_suffix()?;
         }
 
         self.write_terminator()?;
