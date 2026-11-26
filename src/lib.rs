@@ -175,9 +175,8 @@ fn read_pattern_file(path: &OsStr) -> UResult<String> {
 
 #[uucore::main(no_signals)]
 pub fn uumain(args: impl uucore::Args) -> UResult<()> {
-    let app = uu_app();
-    let args = expand_num_shorthand(&app, args);
-    let matches = uucore::clap_localization::handle_clap_result_with_exit_code(app, args, 2)?;
+    let args = expand_num_shorthand(args);
+    let matches = uucore::clap_localization::handle_clap_result_with_exit_code(uu_app(), args, 2)?;
 
     // GNU grep ignores a malformed legacy match color without a warning.
     let grep_color = std::env::var("GREP_COLOR")
@@ -918,7 +917,7 @@ pub fn uu_app() -> Command {
 /// Expand GNU grep's `-NUM` shorthand to `-C NUM`.
 ///
 /// Note that `-a12b` means `-a -C 12 -b`.
-fn expand_num_shorthand(cmd: &Command, args: impl Iterator<Item = OsString>) -> Vec<OsString> {
+fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
     const SHORT_OPTS_WITH_VALUE: &[u8] = b"efmABCDd";
 
     // Rebuild a single option argument out of `prefix` and `bytes`.
@@ -951,7 +950,7 @@ fn expand_num_shorthand(cmd: &Command, args: impl Iterator<Item = OsString>) -> 
 
         // Skip --long options, and the next argument if it is their value.
         if let Some(name) = arg.strip_prefix(b"-") {
-            i += 1 + usize::from(long_option_takes_next_arg(cmd, name));
+            i += 1 + usize::from(long_option_takes_next_arg(name));
             continue;
         }
 
@@ -1004,29 +1003,35 @@ fn expand_num_shorthand(cmd: &Command, args: impl Iterator<Item = OsString>) -> 
     out
 }
 
+/// Long options that read their value from the next argument. Keep in sync
+/// with `uu_app()`; `long_option_list_matches_uu_app` checks it.
+const LONG_OPTS_WITH_VALUE: &[&str] = &[
+    "regexp",
+    "file",
+    "max-count",
+    "label",
+    "after-context",
+    "before-context",
+    "context",
+    "devices",
+    "directories",
+    "binary-files",
+    "include",
+    "exclude",
+    "exclude-from",
+    "exclude-dir",
+    "group-separator",
+];
+
 /// Whether the long option `name` (the part after `--`) reads its value from
-/// the next argument. `name` may be abbreviated the way clap's
-/// `infer_long_args` resolves it: an exact name wins, otherwise the prefix must
-/// select a single option. Anything clap will reject is reported as `false`.
-fn long_option_takes_next_arg(cmd: &Command, name: &[u8]) -> bool {
-    if name.contains(&b'=') {
-        return false;
-    }
-    fn names(arg: &Arg) -> impl Iterator<Item = &[u8]> {
-        let aliases = arg.get_all_aliases().unwrap_or_default();
-        arg.get_long().into_iter().chain(aliases).map(str::as_bytes)
-    }
-    let exact = cmd
-        .get_arguments()
-        .find(|arg| names(arg).any(|n| n == name));
-    let mut prefixed = cmd
-        .get_arguments()
-        .filter(|arg| names(arg).any(|n| n.starts_with(name)));
-    let arg = match (exact, prefixed.next(), prefixed.next()) {
-        (Some(arg), _, _) | (None, Some(arg), None) => arg,
-        _ => return false,
-    };
-    arg.get_action().takes_values() && !arg.is_require_equals_set()
+/// the next argument. `name` may be any prefix of an option, as accepted by
+/// `infer_long_args`. A prefix that is ambiguous is rejected by clap anyway.
+fn long_option_takes_next_arg(name: &[u8]) -> bool {
+    // `--binary` is a flag of its own, though also a prefix of `--binary-files`.
+    name != b"binary"
+        && LONG_OPTS_WITH_VALUE
+            .iter()
+            .any(|opt| opt.as_bytes().starts_with(name))
 }
 
 impl Default for GlobSet {
@@ -1144,5 +1149,24 @@ impl<'a> ColorConfig<'a> {
 
         config.uses_grep_color = selected_from_grep_color || context_from_grep_color;
         config
+    }
+}
+
+#[cfg(test)]
+mod long_option_tests {
+    use super::*;
+
+    #[test]
+    fn long_option_list_matches_uu_app() {
+        let app = uu_app();
+        let mut expected: Vec<&str> = app
+            .get_arguments()
+            .filter(|arg| arg.get_action().takes_values() && !arg.is_require_equals_set())
+            .filter_map(Arg::get_long)
+            .collect();
+        let mut actual = LONG_OPTS_WITH_VALUE.to_vec();
+        expected.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
     }
 }
