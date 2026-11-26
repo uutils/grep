@@ -71,10 +71,12 @@ impl<'a> Matcher<'a> {
     }
 
     /// Decide whether `line` matches and return the positions to highlight.
-    pub fn match_line(&self, line: &[u8]) -> Option<Vec<(usize, usize)>> {
+    /// `ascii` is true when the caller already knows `line` is pure ASCII, which
+    /// saves checking it for invalid UTF-8.
+    pub fn match_line(&self, line: &[u8], ascii: bool) -> Option<Vec<(usize, usize)>> {
         let mut any_seen = false;
         let mut any_selected = false;
-        let segments = self.segments(line);
+        let segments = self.segments(line, ascii);
         let positions: Vec<_> = MatchIter::new(&self.patterns, line, segments.as_deref())
             .filter(|&(start, end)| {
                 any_seen = true;
@@ -108,12 +110,12 @@ impl<'a> Matcher<'a> {
     }
 
     /// Cheap match check that doesn't enumerate positions.
-    pub fn is_match(&self, line: &[u8]) -> Option<Vec<(usize, usize)>> {
+    pub fn is_match(&self, line: &[u8], ascii: bool) -> Option<Vec<(usize, usize)>> {
         // `-w` / `-x` need positions to filter, so we fall back to `match_line`.
         let matched = if self.config.line_regexp || self.config.word_regexp {
-            self.match_line(line).is_some()
+            self.match_line(line, ascii).is_some()
         } else {
-            let segments = self.segments(line);
+            let segments = self.segments(line, ascii);
             let raw_matched = self
                 .patterns
                 .iter()
@@ -123,8 +125,8 @@ impl<'a> Matcher<'a> {
         matched.then(Vec::new)
     }
 
-    fn segments(&self, line: &[u8]) -> Option<Vec<(usize, usize)>> {
-        if self.byte_locale {
+    fn segments(&self, line: &[u8], ascii: bool) -> Option<Vec<(usize, usize)>> {
+        if self.byte_locale || ascii {
             None
         } else {
             utf8_segments(line)

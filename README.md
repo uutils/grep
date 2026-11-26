@@ -58,7 +58,7 @@ This project uses [pre-commit](https://pre-commit.com); run `pre-commit install`
 
 ## Known Issues
 
-* Does not take `LANG`, etc., into account for handling file encodings (non-UTF8 matches are treated as binary)
+* Only the `C` and `POSIX` locales (from `LC_ALL`, `LC_CTYPE` or `LANG`) are taken into account: they match single bytes. Every other locale is handled as UTF-8, and a match on a line that is not valid UTF-8 makes the file binary
 * No localization support yet
 * Performances need to be improved
 

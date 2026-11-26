@@ -121,6 +121,24 @@ fn bench_e2e(c: &mut Criterion) {
         group.finish();
     }
 
+    // Invalid UTF-8 is matched run by run. A line with many invalid bytes must
+    // stay linear in its length.
+    {
+        let invalid = dir.join("invalid.bin");
+        let mut data = b"a\xff".repeat(50_000);
+        data.push(b'\n');
+        std::fs::write(&invalid, data).unwrap();
+        let invalid = invalid.to_str().unwrap();
+        let mut group = c.benchmark_group("invalid_utf8");
+        group.bench_function("only_matching_many_runs", |b| {
+            b.iter(|| run(black_box(&["-a", "-o", "a", invalid])))
+        });
+        group.bench_function("dot_many_runs", |b| {
+            b.iter(|| run(black_box(&["-a", "-c", "-E", "a.", invalid])))
+        });
+        group.finish();
+    }
+
     let _ = std::fs::remove_dir_all(Path::new(dir_str));
 }
 

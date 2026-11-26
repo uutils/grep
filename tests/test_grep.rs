@@ -2475,6 +2475,46 @@ fn anchors_still_match_only_at_line_edges_around_invalid_utf8() {
 }
 
 #[test]
+fn only_matching_on_many_invalid_utf8_bytes_stays_linear() {
+    // One line with 200,000 valid runs separated by invalid bytes. Looking each
+    // match up from the first run again would take minutes; a cursor that
+    // keeps its place finishes in about a second.
+    let runs = 200_000;
+    let input = b"a\xff".repeat(runs);
+    let expected = "a\n".repeat(runs);
+    let start = std::time::Instant::now();
+    let (_s, mut c) = ucmd();
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-o", "a"])
+        .pipe_in(input.clone())
+        .succeeds()
+        .stdout_only(&expected);
+    let (_s, mut c) = ucmd();
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-o", "-e", "a", "-e", "b"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only(&expected);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(60),
+        "-o over many invalid UTF-8 runs took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn ascii_and_utf8_lines_around_invalid_lines_keep_their_matches() {
+    // Lines with and without invalid bytes, ASCII and multibyte, in one input.
+    let input = &b"abc\nz\xffz\ncaf\xc3\xa9 z.z\nz\xc3\xa9z\nxyz\n"[..];
+    let (_s, mut c) = ucmd();
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-n", "z.z"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("3:caf\u{e9} z.z\n4:z\u{e9}z\n");
+}
+
+#[test]
 fn byte_locales_match_non_ascii_bytes() {
     let input = &b"a\nz\xffz\nb\n"[..];
     for locale in ["C", "POSIX"] {

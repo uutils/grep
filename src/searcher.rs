@@ -520,7 +520,7 @@ impl<'a> Searcher<'a> {
 
         let mut line_number: u64 = 0;
 
-        while let Some((line, line_start)) = lb.read_line(reader)? {
+        while let Some((line, line_start, ascii)) = lb.read_line(reader)? {
             line_number += 1;
             // Offset of the next line. A final line without a terminator makes
             // this one byte past the input, which reads the same as its end.
@@ -540,7 +540,7 @@ impl<'a> Searcher<'a> {
                 return Ok(false);
             }
 
-            if let Some(positions) = self.session_match_line(line) {
+            if let Some(positions) = self.session_match_line(line, ascii) {
                 // TODO: GNU grep respects LANG. Here, I'm always checking for valid UTF-8.
                 if self.config.binary_mode != BinaryMode::WithoutMatch
                     && !self.session_mark_binary_if(|| std::str::from_utf8(line).is_err())
@@ -584,13 +584,13 @@ impl<'a> Searcher<'a> {
         self.config.binary_mode != BinaryMode::WithoutMatch
     }
 
-    fn session_match_line(&self, line: &[u8]) -> Option<Vec<(usize, usize)>> {
+    fn session_match_line(&self, line: &[u8], ascii: bool) -> Option<Vec<(usize, usize)>> {
         if !self.session_can_match() {
             None
         } else if self.session_needs_match_positions() {
-            self.matcher.match_line(line)
+            self.matcher.match_line(line, ascii)
         } else {
-            self.matcher.is_match(line)
+            self.matcher.is_match(line, ascii)
         }
     }
 
