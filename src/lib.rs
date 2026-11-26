@@ -177,7 +177,15 @@ fn read_pattern_file(path: &OsStr) -> UResult<String> {
 pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let app = uu_app();
     let args = expand_num_shorthand(&app, args);
-    let matches = uucore::clap_localization::handle_clap_result_with_exit_code(app, args, 2)?;
+    let matches = match uucore::clap_localization::handle_clap_result_with_exit_code(app, args, 2) {
+        Ok(m) => m,
+        Err(e) => {
+            if e.code() == 0 {
+                return Err(e);
+            }
+            return Err(USimpleError::new(2, ""));
+        }
+    };
 
     // GNU grep ignores a malformed legacy match color without a warning.
     let grep_color = std::env::var("GREP_COLOR")

@@ -2697,3 +2697,24 @@ fn diagnostics_follow_earlier_output() {
         "a.txt:foo a\ngrep: bin.dat: binary file matches\ngrep: missing.txt: No such file or directory\nb.txt:foo b\n"
     );
 }
+
+#[test]
+fn missing_option_argument_exits_with_code_two() {
+    for flag in [
+        "-e",
+        "-f",
+        "-m",
+        "-A",
+        "-B",
+        "-C",
+        "--regexp",
+        "--file",
+        "--max-count",
+        "--after-context",
+        "--before-context",
+        "--context",
+    ] {
+        let (_s, mut c) = ucmd();
+        c.arg(flag).pipe_in("foo\n").fails_with_code(2);
+    }
+}
