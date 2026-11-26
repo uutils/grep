@@ -2697,3 +2697,59 @@ fn diagnostics_follow_earlier_output() {
         "a.txt:foo a\ngrep: bin.dat: binary file matches\ngrep: missing.txt: No such file or directory\nb.txt:foo b\n"
     );
 }
+
+#[test]
+fn lenient_count_values() {
+    for args in [
+        &["-m", "-1"][..],
+        &["--max-count=-3"],
+        &["-m", "123456789012345678901234"],
+        &["-m", "  +1"],
+        &["-m", "1"],
+    ] {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .arg("x")
+            .pipe_in("x1\nx2\ny\n")
+            .succeeds()
+            .stdout_only(if args.contains(&"1") || args.contains(&"  +1") {
+                "x1\n"
+            } else {
+                "x1\nx2\n"
+            });
+    }
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-A", "  1", "x"])
+        .pipe_in("x\ny\nz\n")
+        .succeeds()
+        .stdout_only("x\ny\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-A", "+1", "x"])
+        .pipe_in("x\ny\nz\n")
+        .succeeds()
+        .stdout_only("x\ny\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-B", "123456789012345678901234", "z"])
+        .pipe_in("x\ny\nz\n")
+        .succeeds()
+        .stdout_only("x\ny\nz\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-C", "  2", "y"])
+        .pipe_in("x\ny\nz\n")
+        .succeeds()
+        .stdout_only("x\ny\nz\n");
+
+    for bad in ["2 ", "", "   ", "-", "-abc", "+", "abc", "+abc"] {
+        let (_s, mut c) = ucmd();
+        c.args(&["-m", bad, "x"]).pipe_in("x\n").fails_with_code(2);
+    }
+
+    for bad in ["-1", "", "   ", "+", "abc", "+abc"] {
+        let (_s, mut c) = ucmd();
+        c.args(&["-A", bad, "x"]).pipe_in("x\n").fails_with_code(2);
+    }
+}
