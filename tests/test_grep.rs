@@ -2704,17 +2704,29 @@ fn lenient_count_values() {
         &["-m", "-1"][..],
         &["--max-count=-3"],
         &["-m", "123456789012345678901234"],
+        &["-m", "  +1"],
+        &["-m", "1"],
     ] {
         let (_s, mut c) = ucmd();
         c.args(args)
             .arg("x")
             .pipe_in("x1\nx2\ny\n")
             .succeeds()
-            .stdout_only("x1\nx2\n");
+            .stdout_only(if args.contains(&"1") || args.contains(&"  +1") {
+                "x1\n"
+            } else {
+                "x1\nx2\n"
+            });
     }
 
     let (_s, mut c) = ucmd();
     c.args(&["-A", "  1", "x"])
+        .pipe_in("x\ny\nz\n")
+        .succeeds()
+        .stdout_only("x\ny\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-A", "+1", "x"])
         .pipe_in("x\ny\nz\n")
         .succeeds()
         .stdout_only("x\ny\n");
@@ -2726,5 +2738,18 @@ fn lenient_count_values() {
         .stdout_only("x\ny\nz\n");
 
     let (_s, mut c) = ucmd();
-    c.args(&["-m", "2 ", "x"]).pipe_in("x\n").fails_with_code(2);
+    c.args(&["-C", "  2", "y"])
+        .pipe_in("x\ny\nz\n")
+        .succeeds()
+        .stdout_only("x\ny\nz\n");
+
+    for bad in ["2 ", "", "   ", "-", "-abc", "+", "abc", "+abc"] {
+        let (_s, mut c) = ucmd();
+        c.args(&["-m", bad, "x"]).pipe_in("x\n").fails_with_code(2);
+    }
+
+    for bad in ["-1", "", "   ", "+", "abc", "+abc"] {
+        let (_s, mut c) = ucmd();
+        c.args(&["-A", bad, "x"]).pipe_in("x\n").fails_with_code(2);
+    }
 }
