@@ -93,6 +93,9 @@ pub struct ColorConfig<'a> {
 
     pub reverse_video: bool,
     pub no_erase: bool,
+
+    /// Whether `GREP_COLOR` still sets a match color after `GREP_COLORS`.
+    pub uses_grep_color: bool,
 }
 
 /// Include and exclude patterns, in command-line order. As in GNU grep, the
@@ -172,8 +175,9 @@ fn read_pattern_file(path: &OsStr) -> UResult<String> {
 
 #[uucore::main(no_signals)]
 pub fn uumain(args: impl uucore::Args) -> UResult<()> {
-    let args = expand_num_shorthand(args);
-    let matches = uucore::clap_localization::handle_clap_result_with_exit_code(uu_app(), args, 2)?;
+    let app = uu_app();
+    let args = expand_num_shorthand(&app, args);
+    let matches = uucore::clap_localization::handle_clap_result_with_exit_code(app, args, 2)?;
 
     // GNU grep ignores a malformed legacy match color without a warning.
     let grep_color = std::env::var("GREP_COLOR")
@@ -436,12 +440,11 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
                 }
         }
     };
-    // GNU grep treats GREP_COLOR as deprecated: when it is set and color output
-    // is active, warn and point users at the GREP_COLORS 'mt' capability.
-    if use_color && !grep_color.is_empty() {
-        show_warning!("GREP_COLOR='{grep_color}' is deprecated; use GREP_COLORS='mt={grep_color}'");
-    }
     let color_config = ColorConfig::from_env(&grep_color, &grep_colors);
+    // GNU grep treats GREP_COLOR as deprecated: when color output is active and
+    // GREP_COLORS leaves it in charge of a match color, warn and point users at
+    // the GREP_COLORS 'mt' capability.
+    let warn_grep_color = use_color && color_config.uses_grep_color;
 
     let config = Config {
         // Searcher
@@ -502,6 +505,10 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         return Err(ExitCode::new(1));
     }
 
+    if warn_grep_color {
+        show_warning!("GREP_COLOR='{grep_color}' is deprecated; use GREP_COLORS='mt={grep_color}'");
+    }
+
     let writer = OutputWriter::new(&config);
     let mut searcher = Searcher::new(&config, matcher, writer);
     let mut lb = LineBuffer::new(if config.null_data { b'\0' } else { b'\n' });
@@ -538,6 +545,8 @@ pub fn uu_app() -> Command {
         // options take the last); make clap replace rather than error. Args
         // with ArgAction::Append (e.g. -e/-f/--include) still accumulate.
         .args_override_self(true)
+        // Like getopt_long, accept any unambiguous prefix of a long option.
+        .infer_long_args(true)
         .after_help(
             "When FILE is '-', read standard input.  If no FILE is given, read standard \
              input, but with -r, recursively search the working directory instead.  With \
@@ -595,7 +604,8 @@ pub fn uu_app() -> Command {
                 .value_name("FILE")
                 .value_parser(clap::builder::ValueParser::os_string())
                 .help("take PATTERNS from FILE")
-                .action(ArgAction::Append),
+                .action(ArgAction::Append)
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("ignore_case")
@@ -708,7 +718,8 @@ pub fn uu_app() -> Command {
                 .long("label")
                 .value_name("LABEL")
                 .value_parser(clap::builder::ValueParser::os_string())
-                .help("use LABEL as the standard input file name prefix"),
+                .help("use LABEL as the standard input file name prefix")
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("only_matching")
@@ -780,14 +791,16 @@ pub fn uu_app() -> Command {
                 .long("include")
                 .value_name("GLOB")
                 .help("search only files that match GLOB (a file pattern)")
-                .action(ArgAction::Append),
+                .action(ArgAction::Append)
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("exclude")
                 .long("exclude")
                 .value_name("GLOB")
                 .help("skip files that match GLOB")
-                .action(ArgAction::Append),
+                .action(ArgAction::Append)
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("exclude_from")
@@ -795,14 +808,16 @@ pub fn uu_app() -> Command {
                 .value_name("FILE")
                 .value_parser(clap::builder::ValueParser::os_string())
                 .help("skip files that match any file pattern from FILE")
-                .action(ArgAction::Append),
+                .action(ArgAction::Append)
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("exclude_dir")
                 .long("exclude-dir")
                 .value_name("GLOB")
                 .help("skip directories that match GLOB")
-                .action(ArgAction::Append),
+                .action(ArgAction::Append)
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("files_without_match")
@@ -870,7 +885,8 @@ pub fn uu_app() -> Command {
                 .long("group-separator")
                 .value_name("SEP")
                 .help("print SEP on line between matches with context")
-                .default_value("--"),
+                .default_value("--")
+                .allow_hyphen_values(true),
         )
         .arg(
             Arg::new("no_group_separator")
@@ -902,25 +918,8 @@ pub fn uu_app() -> Command {
 /// Expand GNU grep's `-NUM` shorthand to `-C NUM`.
 ///
 /// Note that `-a12b` means `-a -C 12 -b`.
-fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
+fn expand_num_shorthand(cmd: &Command, args: impl Iterator<Item = OsString>) -> Vec<OsString> {
     const SHORT_OPTS_WITH_VALUE: &[u8] = b"efmABCDd";
-    const LONG_OPTS_WITH_VALUE: &[&[u8]] = &[
-        b"regexp",
-        b"file",
-        b"max-count",
-        b"label",
-        b"after-context",
-        b"before-context",
-        b"context",
-        b"devices",
-        b"directories",
-        b"binary-files",
-        b"include",
-        b"exclude",
-        b"exclude-from",
-        b"exclude-dir",
-        b"group-separator",
-    ];
 
     // Rebuild a single option argument out of `prefix` and `bytes`.
     fn option(prefix: &str, bytes: &[u8]) -> OsString {
@@ -950,9 +949,9 @@ fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
             break;
         }
 
-        // Skip --long options.
+        // Skip --long options, and the next argument if it is their value.
         if let Some(name) = arg.strip_prefix(b"-") {
-            i += 1 + usize::from(LONG_OPTS_WITH_VALUE.contains(&name));
+            i += 1 + usize::from(long_option_takes_next_arg(cmd, name));
             continue;
         }
 
@@ -1003,6 +1002,31 @@ fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
     }
 
     out
+}
+
+/// Whether the long option `name` (the part after `--`) reads its value from
+/// the next argument. `name` may be abbreviated the way clap's
+/// `infer_long_args` resolves it: an exact name wins, otherwise the prefix must
+/// select a single option. Anything clap will reject is reported as `false`.
+fn long_option_takes_next_arg(cmd: &Command, name: &[u8]) -> bool {
+    if name.contains(&b'=') {
+        return false;
+    }
+    fn names(arg: &Arg) -> impl Iterator<Item = &[u8]> {
+        let aliases = arg.get_all_aliases().unwrap_or_default();
+        arg.get_long().into_iter().chain(aliases).map(str::as_bytes)
+    }
+    let exact = cmd
+        .get_arguments()
+        .find(|arg| names(arg).any(|n| n == name));
+    let mut prefixed = cmd
+        .get_arguments()
+        .filter(|arg| names(arg).any(|n| n.starts_with(name)));
+    let arg = match (exact, prefixed.next(), prefixed.next()) {
+        (Some(arg), _, _) | (None, Some(arg), None) => arg,
+        _ => return false,
+    };
+    arg.get_action().takes_values() && !arg.is_require_equals_set()
 }
 
 impl Default for GlobSet {
@@ -1063,11 +1087,17 @@ impl<'a> ColorConfig<'a> {
             context_line: "",
             reverse_video: false,
             no_erase: false,
+            uses_grep_color: false,
         };
 
+        // Which match colors still come from GREP_COLOR.
+        let mut selected_from_grep_color = false;
+        let mut context_from_grep_color = false;
         if !grep_color.is_empty() {
             config.matched_selected = grep_color;
             config.matched_context = grep_color;
+            selected_from_grep_color = true;
+            context_from_grep_color = true;
         }
 
         // GNU grep retains prior settings and stops at an empty assignment key
@@ -1082,9 +1112,17 @@ impl<'a> ColorConfig<'a> {
                     "mt" => {
                         config.matched_selected = value;
                         config.matched_context = value;
+                        selected_from_grep_color = false;
+                        context_from_grep_color = false;
                     }
-                    "ms" => config.matched_selected = value,
-                    "mc" => config.matched_context = value,
+                    "ms" => {
+                        config.matched_selected = value;
+                        selected_from_grep_color = false;
+                    }
+                    "mc" => {
+                        config.matched_context = value;
+                        context_from_grep_color = false;
+                    }
                     "fn" => config.filename = value,
                     "ln" => config.line_number = value,
                     "bn" => config.byte_offset = value,
@@ -1104,6 +1142,7 @@ impl<'a> ColorConfig<'a> {
             }
         }
 
+        config.uses_grep_color = selected_from_grep_color || context_from_grep_color;
         config
     }
 }

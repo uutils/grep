@@ -181,7 +181,13 @@ impl<'a> Searcher<'a> {
             // We're only interested in files, so skip dirs.
             // If we have a --exclude-dir pattern, skip matching directories entirely.
             if file_type.is_dir() {
-                if self.config.exclude_dir_globs.skips(entry.file_name()) {
+                // An exclude-dir pattern can match the directory's base name,
+                // its path as walked, or a starting point as written.
+                let globs = &self.config.exclude_dir_globs;
+                if globs.skips(entry.file_name())
+                    || globs.skips(entry.path().as_os_str())
+                    || (entry.depth() == 0 && globs.skips(start.as_os_str()))
+                {
                     walker.skip_current_dir();
                 }
                 continue;
@@ -238,10 +244,7 @@ impl<'a> Searcher<'a> {
                 }
             }
             Ok(false) => {}
-            Err(err) => {
-                self.had_error = true;
-                self.writer.report_io_error(label, &err);
-            }
+            Err(err) => self.report_read_error(label, &err),
         }
 
         ControlFlow::Continue(())
@@ -345,7 +348,16 @@ impl<'a> Searcher<'a> {
 
         let mut count: u64 = 0;
         let mut matched = false;
-        'outer: while let Some((chunk, chunk_off)) = lb.read_chunk(reader)? {
+        let mut read_error = None;
+        'outer: loop {
+            let (chunk, chunk_off) = match lb.read_chunk(reader) {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(err) => {
+                    read_error = Some(err);
+                    break;
+                }
+            };
             let mut p = 0;
             while p < chunk.len() {
                 let Some(rel) = leftmost_match(finders, &chunk[p..]) else {
@@ -366,6 +378,9 @@ impl<'a> Searcher<'a> {
         }
 
         self.session_match_count = count;
+        if let Some(err) = read_error {
+            self.report_read_error(path.as_os_str(), &err);
+        }
 
         // `-l`/`-L` take precedence over `-c`, matching the line-at-a-time path.
         if self.config.quiet {
@@ -519,8 +534,17 @@ impl<'a> Searcher<'a> {
         lb.reset();
 
         let mut line_number: u64 = 0;
+        let mut read_error = None;
 
-        while let Some((line, line_start)) = lb.read_line(reader)? {
+        loop {
+            let (line, line_start) = match lb.read_line(reader) {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(err) => {
+                    read_error = Some(err);
+                    break;
+                }
+            };
             line_number += 1;
             // Offset of the next line. A final line without a terminator makes
             // this one byte past the input, which reads the same as its end.
@@ -568,7 +592,18 @@ impl<'a> Searcher<'a> {
             }
         }
 
+        if let Some(err) = read_error {
+            self.report_read_error(path.as_os_str(), &err);
+        }
         self.session_finalize(path)
+    }
+
+    /// Report an error opening or reading `label`. A read error ends the file
+    /// like end of input does: it is reported right away, and the lines read so far still count, so `-c` prints the count
+    /// and `-L` the name, as GNU grep does.
+    fn report_read_error(&mut self, label: &OsStr, err: &io::Error) {
+        self.had_error = true;
+        self.writer.report_io_error(label, err);
     }
 
     /// Mark the file as binary when `predicate` returns true.
