@@ -2697,3 +2697,25 @@ fn diagnostics_follow_earlier_output() {
         "a.txt:foo a\ngrep: bin.dat: binary file matches\ngrep: missing.txt: No such file or directory\nb.txt:foo b\n"
     );
 }
+
+#[test]
+fn bre_anchors_are_literal_away_from_the_edges() {
+    let (_s, mut c) = ucmd();
+    c.args(&["a$b"])
+        .pipe_in("a$b\nab\n")
+        .succeeds()
+        .stdout_only("a$b\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["x^2"])
+        .pipe_in("x^2\nx2\n")
+        .succeeds()
+        .stdout_only("x^2\n");
+
+    // Still anchors at the edges of the pattern and of a group.
+    let (_s, mut c) = ucmd();
+    c.args(&["^a\\(b$\\)"])
+        .pipe_in("ab\nxab\nabc\n")
+        .succeeds()
+        .stdout_only("ab\n");
+}

@@ -296,6 +296,16 @@ struct CompiledPattern {
     longest_anchored: OnigRegex,
 }
 
+fn enable_syntax_behavior(syntax: &mut Syntax, behavior: SyntaxBehavior) {
+    let raw_ptr = syntax as *mut Syntax as *mut onig_sys::OnigSyntaxType;
+    let mut current_bits = unsafe { onig_sys::onig_get_syntax_behavior(raw_ptr) };
+    // GNU grep rejects empty ranges like [b-a] with "Invalid range end", while
+    // OnigSyntaxGrep enables ONIG_SYN_ALLOW_EMPTY_RANGE_IN_CC by default.
+    current_bits &= !onig_sys::ONIG_SYN_ALLOW_EMPTY_RANGE_IN_CC;
+    let new_bits = current_bits | (behavior.bits() as std::os::raw::c_uint);
+    syntax.set_behavior(SyntaxBehavior::from_bits_retain(new_bits as u32));
+}
+
 impl CompiledPattern {
     fn compile(pattern: &str, config: &Config) -> UResult<Self> {
         let mut syntax = *match config.regex_mode {
@@ -306,7 +316,10 @@ impl CompiledPattern {
         };
         if config.regex_mode != RegexMode::Fixed {
             // GNU grep supports `{,n}` as an alias for `{0,n}`.
-            syntax.enable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_INTERVAL_LOW_ABBREV);
+            enable_syntax_behavior(
+                &mut syntax,
+                SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_INTERVAL_LOW_ABBREV,
+            );
         }
         if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended) {
             // GNU grep supports \` and \' as buffer anchors in BRE and ERE.
@@ -314,7 +327,10 @@ impl CompiledPattern {
         }
         if config.regex_mode == RegexMode::Extended {
             // GNU grep -E reads an unmatched `)` as a literal.
-            syntax.enable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_UNMATCHED_CLOSE_SUBEXP);
+            enable_syntax_behavior(
+                &mut syntax,
+                SyntaxBehavior::SYNTAX_BEHAVIOR_ALLOW_UNMATCHED_CLOSE_SUBEXP,
+            );
         }
 
         if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended)
