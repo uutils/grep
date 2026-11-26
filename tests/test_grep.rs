@@ -1,4 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use rstest::rstest;
 #[cfg(unix)]
 use uutests::util::TerminalSimulation;
 use uutests::util::{TestScenario, UCommand};
@@ -15,124 +17,72 @@ fn ucmd() -> (TestScenario, UCommand) {
     (scene, cmd)
 }
 
-#[test]
-fn bre_default_metacharacters() {
-    // BRE: . * ^ $ [] [^] and literal +, |, (, )
-    let cases: &[(&str, &str, &str)] = &[
-        ("a.c", "abc\nadc\nac\n", "abc\nadc\n"),
-        ("fo*", "f\nfo\nfoo\nbar\n", "f\nfo\nfoo\n"),
-        ("^foo", "foo\nbarfoo\nfoo\n", "foo\nfoo\n"),
-        ("bar$", "bar\nfoobar\nbarx\n", "bar\nfoobar\n"),
-        ("[Hh]i", "Hi\nhi\nHI\n", "Hi\nhi\n"),
-        ("[^a-z]X", "aX\nbX\n.X\n", ".X\n"),
-        // `+`, `|`, `(`, `)` are literals in BRE
-        ("a+b", "a+b\nab\n", "a+b\n"),
-        ("a|b", "a|b\na\n", "a|b\n"),
-        ("(x)", "(x)\nx\n", "(x)\n"),
-    ];
-    for (pat, input, expected) in cases {
-        let (_s, mut c) = ucmd();
-        c.args(&[pat])
-            .pipe_in(*input)
-            .succeeds()
-            .stdout_only(*expected);
-    }
+// BRE: . * ^ $ [] [^] and literal +, |, (, )
+#[rstest]
+#[case("a.c", "abc\nadc\nac\n", "abc\nadc\n")]
+#[case("fo*", "f\nfo\nfoo\nbar\n", "f\nfo\nfoo\n")]
+#[case("^foo", "foo\nbarfoo\nfoo\n", "foo\nfoo\n")]
+#[case("bar$", "bar\nfoobar\nbarx\n", "bar\nfoobar\n")]
+#[case("[Hh]i", "Hi\nhi\nHI\n", "Hi\nhi\n")]
+#[case("[^a-z]X", "aX\nbX\n.X\n", ".X\n")]
+// `+`, `|`, `(`, `)` are literals in BRE
+#[case("a+b", "a+b\nab\n", "a+b\n")]
+#[case("a|b", "a|b\na\n", "a|b\n")]
+#[case("(x)", "(x)\nx\n", "(x)\n")]
+fn bre_default_metacharacters(#[case] pattern: &str, #[case] input: &str, #[case] expected: &str) {
+    let (_s, mut c) = ucmd();
+    c.args(&[pattern])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only(expected);
 }
 
-#[test]
-fn bre_gnu_extensions() {
-    // \+ \? \| \{m,n\} \< \> \b \w plus backreferences and leading `*`.
+// \+ \? \| \{m,n\} \< \> \b \w plus backreferences and leading `*`.
+#[rstest]
+#[case(r"o\+", "o\noo\nx\n", "o\noo\n")]
+#[case(r"Hi\|HI", "Hi\nHI\nhi\n", "Hi\nHI\n")]
+#[case(r"a\{2,3\}", "a\naa\naaaa\n", "aa\naaaa\n")]
+#[case(r"\<word\>", "word\nwording\nthe word here\n", "word\nthe word here\n")]
+#[case(r"\bcontain\b", "contain\ncontainer\ncontained\n", "contain\n")]
+// BRE backreference: repeated adjacent word.
+#[case(
+    r"\(\b\w\+\b\) \1",
+    "the the cat\nfoo bar\nis is great\n",
+    "the the cat\nis is great\n"
+)]
+// Leading `*` is literal in BRE.
+#[case("*foo", "*foo\nfoo\n**foo\n", "*foo\n**foo\n")]
+fn bre_gnu_extensions(#[case] pattern: &str, #[case] input: &str, #[case] expected: &str) {
     let (_s, mut c) = ucmd();
-    c.args(&[r"o\+"])
-        .pipe_in("o\noo\nx\n")
+    c.args(&[pattern])
+        .pipe_in(input)
         .succeeds()
-        .stdout_only("o\noo\n");
-
-    let (_s, mut c) = ucmd();
-    c.args(&[r"Hi\|HI"])
-        .pipe_in("Hi\nHI\nhi\n")
-        .succeeds()
-        .stdout_only("Hi\nHI\n");
-
-    let (_s, mut c) = ucmd();
-    c.args(&[r"a\{2,3\}"])
-        .pipe_in("a\naa\naaaa\n")
-        .succeeds()
-        .stdout_only("aa\naaaa\n");
-
-    let (_s, mut c) = ucmd();
-    c.args(&[r"\<word\>"])
-        .pipe_in("word\nwording\nthe word here\n")
-        .succeeds()
-        .stdout_only("word\nthe word here\n");
-
-    let (_s, mut c) = ucmd();
-    c.args(&[r"\bcontain\b"])
-        .pipe_in("contain\ncontainer\ncontained\n")
-        .succeeds()
-        .stdout_only("contain\n");
-
-    // BRE backreference: repeated adjacent word.
-    let (_s, mut c) = ucmd();
-    c.args(&[r"\(\b\w\+\b\) \1"])
-        .pipe_in("the the cat\nfoo bar\nis is great\n")
-        .succeeds()
-        .stdout_only("the the cat\nis is great\n");
-
-    // Leading `*` is literal in BRE.
-    let (_s, mut c) = ucmd();
-    c.args(&["*foo"])
-        .pipe_in("*foo\nfoo\n**foo\n")
-        .succeeds()
-        .stdout_only("*foo\n**foo\n");
+        .stdout_only(expected);
 }
 
-#[test]
-fn gnu_buffer_anchors() {
+#[rstest]
+#[case::basic(&[r"\`c\|r\'"])]
+#[case::extended(&["-E", r"\`c|r\'"])]
+fn gnu_buffer_anchors(#[case] args: &[&str]) {
     let (_s, mut c) = ucmd();
-    c.args(&[r"\`c\|r\'"])
-        .pipe_in("cat\nscat\ntar\ndog\n")
-        .succeeds()
-        .stdout_only("cat\ntar\n");
-
-    let (_s, mut c) = ucmd();
-    c.args(&["-E", r"\`c|r\'"])
+    c.args(args)
         .pipe_in("cat\nscat\ntar\ndog\n")
         .succeeds()
         .stdout_only("cat\ntar\n");
 }
 
-#[test]
-fn ere_metacharacters() {
-    let cases: &[(&[&str], &str, &str)] = &[
-        (&["-E", "Hi|HI"], "Hi\nHI\nhi\n", "Hi\nHI\n"),
-        (&["-E", "o+"], "o\noo\nx\n", "o\noo\n"),
-        (
-            &["-E", "colou?r"],
-            "colour\ncolor\ncolouur\n",
-            "colour\ncolor\n",
-        ),
-        (&["-E", "(foo|bar)x"], "foox\nbarx\nbaz\n", "foox\nbarx\n"),
-        (&["-E", "o{2}"], "o\noo\nooo\n", "oo\nooo\n"),
-        (
-            &["-E", "a{,2}b"],
-            "b\nab\naab\naaab\n",
-            "b\nab\naab\naaab\n",
-        ),
-        // ERE backreference works on the Oniguruma path.
-        (
-            &["-E", r"(....).*\1"],
-            "beriberi\nhelloworld\n",
-            "beriberi\n",
-        ),
-    ];
-    for (args, input, expected) in cases {
-        let (_s, mut c) = ucmd();
-        c.args(args)
-            .pipe_in(*input)
-            .succeeds()
-            .stdout_only(*expected);
-    }
+#[rstest]
+#[case(&["-E", "Hi|HI"], "Hi\nHI\nhi\n", "Hi\nHI\n")]
+#[case(&["-E", "o+"], "o\noo\nx\n", "o\noo\n")]
+#[case(&["-E", "colou?r"], "colour\ncolor\ncolouur\n", "colour\ncolor\n")]
+#[case(&["-E", "(foo|bar)x"], "foox\nbarx\nbaz\n", "foox\nbarx\n")]
+#[case(&["-E", "o{2}"], "o\noo\nooo\n", "oo\nooo\n")]
+#[case(&["-E", "a{,2}b"], "b\nab\naab\naaab\n", "b\nab\naab\naaab\n")]
+// ERE backreference works on the Oniguruma path.
+#[case(&["-E", r"(....).*\1"], "beriberi\nhelloworld\n", "beriberi\n")]
+fn ere_metacharacters(#[case] args: &[&str], #[case] input: &str, #[case] expected: &str) {
+    let (_s, mut c) = ucmd();
+    c.args(args).pipe_in(input).succeeds().stdout_only(expected);
 }
 
 #[test]
@@ -152,16 +102,16 @@ fn ere_unmatched_close_paren_is_literal() {
         .stdout_only("a)\n");
 }
 
-#[test]
-fn reversed_range_endpoints_match_gnu_message() {
-    // A reversed bracket range like `[b-a]` must fail with exit 2 and GNU's
-    // diagnostic "Invalid range end", in both basic and extended modes.
-    for args in [&["[b-a]"][..], &["-E", "[b-a]"][..]] {
-        let (_s, mut c) = ucmd();
-        c.args(args)
-            .fails_with_code(2)
-            .stderr_contains("Invalid range end");
-    }
+// A reversed bracket range like `[b-a]` must fail with exit 2 and GNU's
+// diagnostic "Invalid range end", in both basic and extended modes.
+#[rstest]
+#[case::basic(&["[b-a]"])]
+#[case::extended(&["-E", "[b-a]"])]
+fn reversed_range_endpoints_match_gnu_message(#[case] args: &[&str]) {
+    let (_s, mut c) = ucmd();
+    c.args(args)
+        .fails_with_code(2)
+        .stderr_contains("Invalid range end");
 }
 
 #[test]
@@ -204,32 +154,29 @@ fn unreadable_pattern_file_is_error() {
         .stderr_contains(MISSING);
 }
 
-#[test]
-fn misspelled_character_class_is_error() {
-    // `[:digit:]` is almost certainly a typo for `[[:digit:]]`; GNU rejects it
-    // with exit 2 in the basic and extended syntaxes.
-    for args in [
-        &["[:digit:]"][..],
-        &["-E", "q[^:digit:]w"][..],
-        &["-E", "[:nosuchclass:]"][..],
-    ] {
-        let (_s, mut c) = ucmd();
-        c.args(args)
-            .fails_with_code(2)
-            .stderr_contains("character class syntax is [[:space:]], not [:space:]");
-    }
+// `[:digit:]` is almost certainly a typo for `[[:digit:]]`; GNU rejects it
+// with exit 2 in the basic and extended syntaxes.
+#[rstest]
+#[case(&["[:digit:]"])]
+#[case(&["-E", "q[^:digit:]w"])]
+#[case(&["-E", "[:nosuchclass:]"])]
+fn misspelled_character_class_is_error(#[case] args: &[&str]) {
+    let (_s, mut c) = ucmd();
+    c.args(args)
+        .fails_with_code(2)
+        .stderr_contains("character class syntax is [[:space:]], not [:space:]");
+}
 
-    // Bracket expressions that only look similar stay valid.
-    for args in [
-        &["[[:digit:]]"][..],
-        &["[::]"][..],
-        &["-E", "[:digit]"][..],
-        &["-E", "[:dig-it:]"][..],
-        &["-F", "[:digit:]"][..],
-    ] {
-        let (_s, mut c) = ucmd();
-        c.args(args).pipe_in("w[:digit:]7d\n").succeeds();
-    }
+// Bracket expressions that only look like a misspelled class stay valid.
+#[rstest]
+#[case(&["[[:digit:]]"])]
+#[case(&["[::]"])]
+#[case(&["-E", "[:digit]"])]
+#[case(&["-E", "[:dig-it:]"])]
+#[case(&["-F", "[:digit:]"])]
+fn character_class_lookalike_is_valid(#[case] args: &[&str]) {
+    let (_s, mut c) = ucmd();
+    c.args(args).pipe_in("w[:digit:]7d\n").succeeds();
 }
 
 #[test]
@@ -258,33 +205,30 @@ fn max_count_rewinds_seekable_stdin() {
     assert_eq!(rest, "b\nq\nc\n");
 }
 
+// Once -m is satisfied grep must exit without waiting for more input, even
+// though standard input is still open (as with `tail -f log | grep -m1 x`).
 #[cfg(unix)]
-#[test]
-fn max_count_literal_stops_reading_open_pipe() {
-    // Once -m is satisfied grep must exit without waiting for more input, even
-    // though standard input is still open (as with `tail -f log | grep -m1 x`).
-    for (args, expected) in [
-        (&["-m1", "word"][..], "word\n"),
-        (&["-c", "-m1", "word"][..], "1\n"),
-        (&["-m2", "word"][..], "word\nword\n"),
-    ] {
-        let (_s, mut c) = ucmd();
-        let mut child = c
-            .args(args)
-            .set_stdin(std::process::Stdio::piped())
-            .run_no_wait();
-        // Write the lines but keep stdin open.
-        child.write_in("word\nother\nword\nother\n");
-        child.delay(500);
-        let still_running = child.is_alive();
-        child.close_stdin(); // let a buggy grep finish so the test cannot hang
-        let result = child.wait().unwrap();
-        assert!(
-            !still_running,
-            "grep {args:?} kept reading after the -m limit"
-        );
-        result.success().stdout_only(expected);
-    }
+#[rstest]
+#[case(&["-m1", "word"], "word\n")]
+#[case(&["-c", "-m1", "word"], "1\n")]
+#[case(&["-m2", "word"], "word\nword\n")]
+fn max_count_literal_stops_reading_open_pipe(#[case] args: &[&str], #[case] expected: &str) {
+    let (_s, mut c) = ucmd();
+    let mut child = c
+        .args(args)
+        .set_stdin(std::process::Stdio::piped())
+        .run_no_wait();
+    // Write the lines but keep stdin open.
+    child.write_in("word\nother\nword\nother\n");
+    child.delay(500);
+    let still_running = child.is_alive();
+    child.close_stdin(); // let a buggy grep finish so the test cannot hang
+    let result = child.wait().unwrap();
+    assert!(
+        !still_running,
+        "grep {args:?} kept reading after the -m limit"
+    );
+    result.success().stdout_only(expected);
 }
 
 #[test]
@@ -371,25 +315,23 @@ fn initial_tab_skips_empty_lines() {
         .stdout_is("in:\tx\nin:\t \n");
 }
 
+#[rstest]
+#[case("?", "warning: ? at start of expression")]
+#[case("*", "warning: * at start of expression")]
+#[case("+", "warning: + at start of expression")]
+#[case("{2}", "warning: {...} at start of expression")]
+#[case("{,2}", "warning: {...} at start of expression")]
+fn ere_leading_repeat_operators_warn_and_match_empty(#[case] pattern: &str, #[case] warning: &str) {
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", "-e", pattern])
+        .pipe_in("abc\n")
+        .succeeds()
+        .stdout_is("abc\n")
+        .stderr_contains(warning);
+}
+
 #[test]
-fn ere_leading_repeat_operators_warn_and_match_empty() {
-    let cases = [
-        ("?", "warning: ? at start of expression"),
-        ("*", "warning: * at start of expression"),
-        ("+", "warning: + at start of expression"),
-        ("{2}", "warning: {...} at start of expression"),
-        ("{,2}", "warning: {...} at start of expression"),
-    ];
-
-    for (pattern, warning) in cases {
-        let (_s, mut c) = ucmd();
-        c.args(&["-E", "-e", pattern])
-            .pipe_in("abc\n")
-            .succeeds()
-            .stdout_is("abc\n")
-            .stderr_contains(warning);
-    }
-
+fn bre_leading_star_is_literal() {
     let (_s, mut c) = ucmd();
     c.args(&["*foo"])
         .pipe_in("*foo\nfoo\n")
@@ -418,28 +360,26 @@ fn fixed_string_is_literal() {
         .stdout_only("hi\nHI\n");
 }
 
+#[rstest]
+#[case(&["-e", ".", "-F", "-G"])]
+#[case(&["-e", ".", "-F", "-E"])]
+#[case(&["-e", ".", "-E", "-G"])]
+#[case(&["-e", ".", "-G", "-E"])]
+#[case(&["-e", ".", "-P", "-F"])]
+#[case(&["-e", ".", "-P", "-E"])]
+#[case(&["-e", ".", "-P", "-G"])]
+#[case(&["-e", ".", "-G", "-F", "-E"])]
+#[case(&["-e", ".", "--fixed-strings", "--basic-regexp"])]
+fn conflicting_matcher_flags_are_rejected(#[case] args: &[&str]) {
+    let (_s, mut c) = ucmd();
+    c.args(args)
+        .fails_with_code(2)
+        .stderr_contains("conflicting matchers specified")
+        .no_stdout();
+}
+
 #[test]
-fn conflicting_matcher_flags_are_rejected() {
-    let cases: &[&[&str]] = &[
-        &["-e", ".", "-F", "-G"],
-        &["-e", ".", "-F", "-E"],
-        &["-e", ".", "-E", "-G"],
-        &["-e", ".", "-G", "-E"],
-        &["-e", ".", "-P", "-F"],
-        &["-e", ".", "-P", "-E"],
-        &["-e", ".", "-P", "-G"],
-        &["-e", ".", "-G", "-F", "-E"],
-        &["-e", ".", "--fixed-strings", "--basic-regexp"],
-    ];
-
-    for args in cases {
-        let (_s, mut c) = ucmd();
-        c.args(args)
-            .fails_with_code(2)
-            .stderr_contains("conflicting matchers specified")
-            .no_stdout();
-    }
-
+fn repeated_matcher_flag_is_accepted() {
     let (_s, mut c) = ucmd();
     c.args(&["-e", ".", "-F", "-F"])
         .pipe_in("abc\n")
@@ -517,10 +457,12 @@ fn perl_regexp_duplicate_patterns() {
         .succeeds()
         .stdout_only("bar\n");
 
-    // Different patterns are still refused.
+    // Different patterns are still refused. grep exits before reading its
+    // input, so the harness's write to stdin can fail with EPIPE.
     let (_s, mut c) = ucmd();
     c.args(&["-P", "-e", "bar", "-e", "baz"])
         .pipe_in("bar\n")
+        .ignore_stdin_write_error()
         .fails_with_code(2)
         .stderr_contains("only supports a single pattern");
 }
@@ -759,6 +701,15 @@ fn pattern_sources() {
         .stdout_only("a\nb\n");
 }
 
+#[rstest]
+fn empty_pattern_file_does_not_open_input(#[values("-G", "-E", "-F")] syntax: &str) {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("empty", "");
+    c.args(&[syntax, "-f", "empty", "no-such-file"])
+        .fails_with_code(1)
+        .no_output();
+}
+
 #[test]
 fn empty_pattern_file_matches_nothing() {
     // An empty pattern list matches no line, so grep exits without reading its
@@ -778,14 +729,6 @@ fn empty_pattern_file_matches_nothing() {
     c.args(&["-c", "-f", "empty", "birds.txt", "gone.txt"])
         .fails_with_code(1)
         .no_output();
-
-    for syntax in ["-G", "-E", "-F"] {
-        let (scene, mut c) = ucmd();
-        scene.fixtures.write("empty", "");
-        c.args(&[syntax, "-f", "empty", "no-such-file"])
-            .fails_with_code(1)
-            .no_output();
-    }
 
     let (scene, mut c) = ucmd();
     scene.fixtures.write("empty", "");
@@ -1142,6 +1085,93 @@ fn label_only_applies_to_stdin() {
 }
 
 #[test]
+fn option_values_starting_with_hyphen() {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("-list", "foo\n");
+    c.args(&["-f", "-list"])
+        .pipe_in("foo\nbar\n")
+        .succeeds()
+        .stdout_only("foo\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-H", "--label", "-in-", "foo"])
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_only("-in-:foo\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["--group-separator", "-=-", "-A0", "x"])
+        .pipe_in("x\ny\nx\n")
+        .succeeds()
+        .stdout_only("x\n-=-\nx\n");
+
+    // --include, --exclude, --exclude-dir and --exclude-from also accept a
+    // value that starts with a hyphen, in both `--opt=VALUE` and `--opt VALUE`
+    // form.
+    let (scene, _) = ucmd();
+    scene.fixtures.mkdir_all("tree/-tmp");
+    scene.fixtures.write("tree/keep.txt", "foo\n");
+    scene.fixtures.write("tree/-odd.txt", "foo\n");
+    scene.fixtures.write("tree/-tmp/hidden.txt", "foo\n");
+    scene.fixtures.write("-excludes", "-odd.txt\n");
+
+    let cases: &[(&[&str], &[&str], &[&str])] = &[
+        (
+            &["--include=-odd.txt"],
+            &["-odd.txt"],
+            &["keep.txt", "hidden.txt"],
+        ),
+        (
+            &["--include", "-odd.txt"],
+            &["-odd.txt"],
+            &["keep.txt", "hidden.txt"],
+        ),
+        (
+            &["--exclude=-odd.txt"],
+            &["keep.txt", "hidden.txt"],
+            &["-odd.txt"],
+        ),
+        (
+            &["--exclude", "-odd.txt"],
+            &["keep.txt", "hidden.txt"],
+            &["-odd.txt"],
+        ),
+        (
+            &["--exclude-dir=-tmp"],
+            &["keep.txt", "-odd.txt"],
+            &["hidden.txt"],
+        ),
+        (
+            &["--exclude-dir", "-tmp"],
+            &["keep.txt", "-odd.txt"],
+            &["hidden.txt"],
+        ),
+        (
+            &["--exclude-from=-excludes"],
+            &["keep.txt", "hidden.txt"],
+            &["-odd.txt"],
+        ),
+        (
+            &["--exclude-from", "-excludes"],
+            &["keep.txt", "hidden.txt"],
+            &["-odd.txt"],
+        ),
+    ];
+    for (opt, expected, unexpected) in cases {
+        let mut args = vec!["-r", "-l"];
+        args.extend_from_slice(opt);
+        args.extend_from_slice(&["foo", "tree"]);
+        let result = scene.cmd(env!("CARGO_BIN_EXE_grep")).args(&args).succeeds();
+        for s in *expected {
+            result.stdout_contains(*s);
+        }
+        for s in *unexpected {
+            result.stdout_does_not_contain(*s);
+        }
+    }
+}
+
+#[test]
 fn line_number_and_byte_offset_prefixes() {
     let (_s, mut c) = ucmd();
     c.args(&["-n", "b"])
@@ -1222,32 +1252,21 @@ fn null_filename_separator() {
         .stdout_only("f\0");
 }
 
-#[test]
-fn after_before_combined_context() {
-    let input = "a\nb\nc\nd\nMATCH\ne\nf\n";
-
+#[rstest]
+#[case("-A", "1", "MATCH\ne\n")]
+#[case("-B", "3", "b\nc\nd\nMATCH\n")]
+#[case("-B", "2000000000", "a\nb\nc\nd\nMATCH\n")]
+#[case("-C", "1", "d\nMATCH\ne\n")]
+fn after_before_combined_context(
+    #[case] option: &str,
+    #[case] count: &str,
+    #[case] expected: &str,
+) {
     let (_s, mut c) = ucmd();
-    c.args(&["-A", "1", "MATCH"])
-        .pipe_in(input)
+    c.args(&[option, count, "MATCH"])
+        .pipe_in("a\nb\nc\nd\nMATCH\ne\nf\n")
         .succeeds()
-        .stdout_only("MATCH\ne\n");
-
-    for (count, expected) in [
-        ("3", "b\nc\nd\nMATCH\n"),
-        ("2000000000", "a\nb\nc\nd\nMATCH\n"),
-    ] {
-        let (_s, mut c) = ucmd();
-        c.args(&["-B", count, "MATCH"])
-            .pipe_in(input)
-            .succeeds()
-            .stdout_only(expected);
-    }
-
-    let (_s, mut c) = ucmd();
-    c.args(&["-C", "1", "MATCH"])
-        .pipe_in(input)
-        .succeeds()
-        .stdout_only("d\nMATCH\ne\n");
+        .stdout_only(expected);
 }
 
 #[test]
@@ -1318,6 +1337,41 @@ fn num_shorthand_does_not_capture_option_values() {
     ok(&["--regexp=-2"], "-2\nx\n", "-2\n");
     ok(&["--", "-2"], "-2\nx\n", "-2\n");
     ok(&["w2"], "w2\nw3\n", "w2\n");
+}
+
+#[test]
+fn abbreviated_long_options() {
+    // (args, input, expected stdout)
+    let cases: &[(&[&str], &str, &str)] = &[
+        (&["--cou", "a"], "a\nb\na\n", "2\n"),
+        (&["--reg=b"], "a\nb\n", "b\n"),
+        (&["--max", "1", "a"], "a\na\n", "a\n"),
+        (&["--ignore", "A"], "a\nb\n", "a\n"),
+        (&["--colo=never", "a"], "a\nb\n", "a\n"),
+        // An abbreviated value option still takes `-7` as its value.
+        (&["--reg", "-7"], "-7\nx\n", "-7\n"),
+        (&["--binary-f", "text", "a"], "a\nb\n", "a\n"),
+        // An exact name wins over a longer option it is a prefix of, so
+        // `--binary` is the flag and `-1` is the context shorthand.
+        (&["--binary", "-1", "b"], "a\nb\nc\n", "a\nb\nc\n"),
+    ];
+    for (args, input, expected) in cases {
+        let (_s, mut c) = ucmd();
+        c.args(args)
+            .pipe_in(*input)
+            .succeeds()
+            .stdout_only(*expected);
+    }
+
+    // An ambiguous prefix stays a usage error.
+    for prefix in ["--co", "--fi"] {
+        let (_s, mut c) = ucmd();
+        c.args(&[prefix, "a"])
+            .ignore_stdin_write_error()
+            .pipe_in("a\n")
+            .fails_with_code(2)
+            .no_stdout();
+    }
 }
 
 #[test]
@@ -1434,37 +1488,40 @@ fn color_never_emits_no_escapes() {
         .stdout_only("foo\n");
 }
 
+// Guard against treating empty TERM or "DUMB" as "dumb".
 #[cfg(unix)]
-#[test]
-fn color_on_a_terminal_needs_option_and_term_not_dumb() {
-    // Guard against treating empty TERM or "DUMB" as "dumb".
-    let colored = "\x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\n";
-    for (term, expected) in [
-        (None, "foo\n"),
-        (Some("dumb"), "foo\n"),
-        (Some(""), colored),
-        (Some("DUMB"), colored),
-        (Some("xterm"), colored),
-    ] {
-        for option in [None, Some("--color"), Some("--color=auto")] {
-            let (_s, mut c) = ucmd();
-            if let Some(term) = term {
-                c.env("TERM", term);
-            }
-            if let Some(option) = option {
-                c.arg(option);
-            }
-            c.terminal_sim_stdio(TerminalSimulation {
-                stdout: true,
-                ..Default::default()
-            })
-            .arg("foo")
-            .pipe_in("foo\n")
-            .succeeds()
-            .no_stderr()
-            .normalized_newlines_stdout_is(if option.is_some() { expected } else { "foo\n" });
-        }
+#[rstest]
+#[case::unset(None, false)]
+#[case::dumb(Some("dumb"), false)]
+#[case::empty(Some(""), true)]
+#[case::dumb_uppercase(Some("DUMB"), true)]
+#[case::xterm(Some("xterm"), true)]
+fn color_on_a_terminal_needs_option_and_term_not_dumb(
+    #[case] term: Option<&str>,
+    #[case] term_has_color: bool,
+    #[values(None, Some("--color"), Some("--color=auto"))] option: Option<&str>,
+) {
+    let (_s, mut c) = ucmd();
+    if let Some(term) = term {
+        c.env("TERM", term);
     }
+    if let Some(option) = option {
+        c.arg(option);
+    }
+    let expected = if term_has_color && option.is_some() {
+        "\x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\n"
+    } else {
+        "foo\n"
+    };
+    c.terminal_sim_stdio(TerminalSimulation {
+        stdout: true,
+        ..Default::default()
+    })
+    .arg("foo")
+    .pipe_in("foo\n")
+    .succeeds()
+    .no_stderr()
+    .normalized_newlines_stdout_is(expected);
 }
 
 #[test]
@@ -1488,6 +1545,42 @@ fn grep_color_env_is_deprecated_with_warning() {
         .pipe_in("foo\n")
         .succeeds()
         .stdout_contains("\x1b[36m\x1b[Kfoo\x1b[m\x1b[K")
+        .stderr_contains("warning: GREP_COLOR='36' is deprecated; use GREP_COLORS='mt=36'");
+}
+
+#[test]
+fn grep_color_warning_only_when_used() {
+    // GREP_COLORS sets both match colors, so GREP_COLOR is not used.
+    for grep_colors in ["mt=35", "ms=35:mc=34"] {
+        let (_s, mut c) = ucmd();
+        c.env("GREP_COLOR", "36")
+            .env("GREP_COLORS", grep_colors)
+            .args(&["--color=always", "foo"])
+            .pipe_in("foo\n")
+            .succeeds()
+            .no_stderr();
+    }
+
+    // No search happens, so no color is used either.
+    for args in [["-m0", "foo"], ["-v", ""]] {
+        let (_s, mut c) = ucmd();
+        c.env("GREP_COLOR", "36")
+            .arg("--color=always")
+            .args(&args)
+            .pipe_in("foo\n")
+            // With -m0, grep exits before reading stdin.
+            .ignore_stdin_write_error()
+            .fails_with_code(1)
+            .no_output();
+    }
+
+    // Only the selected color is overridden: the context color still comes from GREP_COLOR.
+    let (_s, mut c) = ucmd();
+    c.env("GREP_COLOR", "36")
+        .env("GREP_COLORS", "ms=35")
+        .args(&["--color=always", "foo"])
+        .pipe_in("foo\n")
+        .succeeds()
         .stderr_contains("warning: GREP_COLOR='36' is deprecated; use GREP_COLORS='mt=36'");
 }
 
@@ -1625,21 +1718,18 @@ fn lone_control_byte_is_still_text() {
         .no_stderr();
 }
 
-#[test]
-fn invalid_utf8_on_nonmatching_line_does_not_poison_file() {
-    // Whether the bad byte appears before or after the match, the matching
-    // line must still be returned and the file must not be reported as binary.
-    let (scene, _) = ucmd();
-    scene.fixtures.write_bytes("before", b"x\x9dy\nhit\n");
-    scene.fixtures.write_bytes("after", b"hit\nx\x9dy\n");
-
-    for name in ["before", "after"] {
-        let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
-        c.args(&["hit", name])
-            .succeeds()
-            .stdout_is("hit\n")
-            .no_stderr();
-    }
+// Whether the bad byte appears before or after the match, the matching
+// line must still be returned and the file must not be reported as binary.
+#[rstest]
+#[case::before(b"x\x9dy\nhit\n")]
+#[case::after(b"hit\nx\x9dy\n")]
+fn invalid_utf8_on_nonmatching_line_does_not_poison_file(#[case] content: &[u8]) {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write_bytes("in", content);
+    c.args(&["hit", "in"])
+        .succeeds()
+        .stdout_is("hit\n")
+        .no_stderr();
 }
 
 #[test]
@@ -1716,29 +1806,24 @@ fn recursive_no_file_defaults_to_cwd_not_stdin() {
         .stdout_contains("a.txt");
 }
 
-#[test]
-fn recursive_collapses_repeated_trailing_slashes() {
-    // GNU grep reduces the trailing slashes of a directory operand to one,
-    // but keeps the slashes inside it.
-    let (scene, _) = ucmd();
+// GNU grep reduces the trailing slashes of a directory operand to one,
+// but keeps the slashes inside it.
+#[rstest]
+#[case("", "tree//sub//", "tree//sub/c.txt:grep me\n")]
+#[case("", "tree/sub///", "tree/sub/c.txt:grep me\n")]
+#[case("", "tree/sub/", "tree/sub/c.txt:grep me\n")]
+#[case("tree/sub", ".//", "./c.txt:grep me\n")]
+fn recursive_collapses_repeated_trailing_slashes(
+    #[case] dir: &str,
+    #[case] operand: &str,
+    #[case] expected: &str,
+) {
+    let (scene, mut c) = ucmd();
     build_tree(&scene);
-    for (operand, expected) in [
-        ("tree//sub//", "tree//sub/c.txt:grep me\n"),
-        ("tree/sub///", "tree/sub/c.txt:grep me\n"),
-        ("tree/sub/", "tree/sub/c.txt:grep me\n"),
-    ] {
-        scene
-            .cmd(env!("CARGO_BIN_EXE_grep"))
-            .args(&["-r", "grep", operand])
-            .succeeds()
-            .stdout_only(expected);
-    }
-    scene
-        .cmd(env!("CARGO_BIN_EXE_grep"))
-        .current_dir(scene.fixtures.plus("tree/sub"))
-        .args(&["-r", "grep", ".//"])
+    c.current_dir(scene.fixtures.plus(dir))
+        .args(&["-r", "grep", operand])
         .succeeds()
-        .stdout_only("./c.txt:grep me\n");
+        .stdout_only(expected);
 }
 
 #[test]
@@ -1760,6 +1845,20 @@ fn recursive_implicit_cwd_strips_dot_prefix() {
         .stdout_is("only.txt:grep me\n");
 }
 
+// exclude-dir filters whole directories; like GNU grep, trailing
+// slashes in the name are ignored.
+#[rstest]
+fn recursive_exclude_dir_ignores_trailing_slashes(
+    #[values("--exclude-dir=sub", "--exclude-dir=sub/", "--exclude-dir=sub//")] value: &str,
+) {
+    let (scene, mut c) = ucmd();
+    build_tree(&scene);
+    c.args(&["-r", "-l", value, "grep", "tree"])
+        .succeeds()
+        .stdout_contains("a.txt")
+        .stdout_does_not_contain("c.txt");
+}
+
 #[test]
 fn recursive_with_include_exclude() {
     let (scene, _) = ucmd();
@@ -1779,20 +1878,6 @@ fn recursive_with_include_exclude() {
         .stdout_contains("a.txt")
         .stdout_does_not_contain("b.log");
 
-    // exclude-dir filters whole directories; like GNU grep, trailing
-    // slashes in the name are ignored.
-    for value in [
-        "--exclude-dir=sub",
-        "--exclude-dir=sub/",
-        "--exclude-dir=sub//",
-    ] {
-        let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
-        c.args(&["-r", "-l", value, "grep", "tree"])
-            .succeeds()
-            .stdout_contains("a.txt")
-            .stdout_does_not_contain("c.txt");
-    }
-
     // include + exclude both apply (exclude wins on conflict).
     let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
     c.args(&[
@@ -1809,27 +1894,29 @@ fn recursive_with_include_exclude() {
     .stdout_does_not_contain("b.log");
 }
 
+// a.txt matches both, and the later --include wins. b.log matches
+// neither and is kept, since the first pattern is an --exclude.
+#[rstest]
+fn recursive_include_exclude_last_match_wins(
+    #[values("--exclude=a*", "--exclude=zz")] first: &str,
+) {
+    let (scene, mut c) = ucmd();
+    build_tree(&scene);
+    c.args(&["-r", "-l", first, "--include=*.txt", "grep", "tree"])
+        .succeeds()
+        .stdout_contains("a.txt")
+        .stdout_contains("b.log")
+        .stdout_contains("c.txt");
+}
+
 #[test]
-fn recursive_include_exclude_last_match_wins() {
-    let (scene, _) = ucmd();
+fn recursive_exclude_from_counts_at_its_position() {
+    let (scene, mut c) = ucmd();
     build_tree(&scene);
     scene.fixtures.write("excludes", "*.log\n");
 
-    // a.txt matches both, and the later --include wins. b.log matches
-    // neither and is kept, since the first pattern is an --exclude.
-    for first in ["--exclude=a*", "--exclude=zz"] {
-        let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
-        c.args(&["-r", "-l", first, "--include=*.txt", "grep", "tree"])
-            .succeeds()
-            .stdout_contains("a.txt")
-            .stdout_contains("b.log")
-            .stdout_contains("c.txt");
-    }
-
-    // --exclude-from counts at its own position: it comes last here, so
-    // b.log is excluded, and the .txt files match nothing after a first
-    // --include.
-    let mut c = scene.cmd(env!("CARGO_BIN_EXE_grep"));
+    // --exclude-from comes last here, so b.log is excluded, and the .txt
+    // files match nothing after a first --include.
     c.args(&[
         "-r",
         "-l",
@@ -1910,6 +1997,33 @@ fn directories_read_errors() {
     c.args(&["-d", "read", "grep", "tree"])
         .fails_with_code(2)
         .stderr_contains("tree");
+}
+
+// A directory opens but fails to read. GNU still prints its count for `-c`
+// and its name for `-L`. (On Windows a directory does not open at all.)
+// `foo` takes the literal fast path, `fo*` the line-at-a-time one; `-v` never
+// takes the fast path.
+#[cfg(unix)]
+#[rstest]
+#[case::count_fast("-c", "foo", "dir:0\na.txt:1\n")]
+#[case::count_regex("-c", "fo*", "dir:0\na.txt:1\n")]
+#[case::count_invert("-cv", "foo", "dir:0\na.txt:0\n")]
+#[case::without_match_fast("-L", "foo", "dir\n")]
+#[case::without_match_regex("-L", "fo*", "dir\n")]
+#[case::with_matches_fast("-l", "foo", "a.txt\n")]
+#[case::with_matches_regex("-l", "fo*", "a.txt\n")]
+fn count_and_files_without_match_list_unreadable_input(
+    #[case] option: &str,
+    #[case] pattern: &str,
+    #[case] stdout: &str,
+) {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.mkdir("dir");
+    scene.fixtures.write("a.txt", "foo\n");
+    c.args(&[option, pattern, "dir", "a.txt"])
+        .fails_with_code(2)
+        .stdout_is(stdout)
+        .stderr_is("grep: dir: Is a directory\n");
 }
 
 #[test]
@@ -2095,15 +2209,13 @@ fn null_data_mode_records() {
         .stdout_only("1\n");
 }
 
-#[test]
-fn null_data_negated_bracket_matches_newline() {
-    for mode in ["-G", "-E"] {
-        let (_s, mut c) = ucmd();
-        c.args(&[mode, "-z", "-c", "k[^m]w"])
-            .pipe_in("hawk\nwren\0")
-            .succeeds()
-            .stdout_only("1\n");
-    }
+#[rstest]
+fn null_data_negated_bracket_matches_newline(#[values("-G", "-E")] mode: &str) {
+    let (_s, mut c) = ucmd();
+    c.args(&[mode, "-z", "-c", "k[^m]w"])
+        .pipe_in("hawk\nwren\0")
+        .succeeds()
+        .stdout_only("1\n");
 }
 
 #[test]
@@ -2372,48 +2484,54 @@ fn only_matching_with_context() {
         .stdout_only("4:xx\n");
 }
 
-#[test]
-fn color_when_synonyms() {
-    // GNU grep accepts these spellings of WHEN, compared case-insensitively.
-    for when in ["yes", "force", "ALWAYS", "Always"] {
-        let (_s, mut c) = ucmd();
-        c.arg(format!("--color={when}"))
-            .arg("foo")
-            .pipe_in("foo\n")
-            .succeeds()
-            .stdout_only("\x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\n");
-    }
-    for when in ["no", "none", "NEVER", "tty", "if-tty", "Auto"] {
-        let (_s, mut c) = ucmd();
-        c.arg(format!("--colour={when}"))
-            .arg("foo")
-            .pipe_in("foo\n")
-            .succeeds()
-            .stdout_only("foo\n");
-    }
+// GNU grep accepts these spellings of WHEN, compared case-insensitively.
+#[rstest]
+fn color_when_always_synonyms(#[values("yes", "force", "ALWAYS", "Always")] when: &str) {
+    let (_s, mut c) = ucmd();
+    c.arg(format!("--color={when}"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_only("\x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\n");
+}
+
+#[rstest]
+fn color_when_never_synonyms(#[values("no", "none", "NEVER", "tty", "if-tty", "Auto")] when: &str) {
+    let (_s, mut c) = ucmd();
+    c.arg(format!("--colour={when}"))
+        .arg("foo")
+        .pipe_in("foo\n")
+        .succeeds()
+        .stdout_only("foo\n");
+}
+
+#[rstest]
+fn ere_empty_interval_is_error(
+    #[values("zq{}", "(zq){}", "[z]{}", "z*{}", r"\({}", r"a\.{}")] pattern: &str,
+) {
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", pattern])
+        .pipe_in("zq{}\n")
+        .ignore_stdin_write_error()
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_contains("Invalid content of \\{\\}");
+}
+
+// A brace that cannot start an interval stays literal.
+#[rstest]
+fn ere_brace_without_interval_is_literal(
+    #[values("zq{w", "{}", "x|{}", "({})", "zq\\{}")] pattern: &str,
+) {
+    let (_s, mut c) = ucmd();
+    c.args(&["-E", "-c", pattern])
+        .pipe_in("zq{w\nzq{}\n")
+        .succeeds()
+        .stdout_only("1\n");
 }
 
 #[test]
-fn ere_empty_interval_is_error() {
-    for pattern in ["zq{}", "(zq){}", "[z]{}", "z*{}", r"\({}", r"a\.{}"] {
-        let (_s, mut c) = ucmd();
-        c.args(&["-E", pattern])
-            .pipe_in("zq{}\n")
-            .ignore_stdin_write_error()
-            .fails_with_code(2)
-            .no_stdout()
-            .stderr_contains("Invalid content of \\{\\}");
-    }
-
-    // A brace that cannot start an interval stays literal.
-    for pattern in ["zq{w", "{}", "x|{}", "({})", "zq\\{}"] {
-        let (_s, mut c) = ucmd();
-        c.args(&["-E", "-c", pattern])
-            .pipe_in("zq{w\nzq{}\n")
-            .succeeds()
-            .stdout_only("1\n");
-    }
-
+fn ere_trailing_backslash_is_error() {
     // A trailing backslash does not panic during interval inspection.
     let (_s, mut c) = ucmd();
     c.args(&["-E", "a\\"])
@@ -2652,4 +2770,55 @@ fn only_matching_empty_match_does_not_split_utf8() {
         .stdout_only(format!(
             "{red}run{reset} \u{1F635}{red}rm{reset} {red}now{reset}\n"
         ));
+}
+
+// A pattern is matched against the operand as written and against paths
+// relative to it; one with a slash must match that whole path.
+#[rstest]
+#[case("./box", "./box", true)]
+#[case("./b*", "./box", true)]
+#[case("box", "./box", true)]
+#[case("./inner", "./box", false)]
+#[case("box/inner", "./box", false)]
+#[case("./box/inner", "./box", true)]
+#[case("box/inner", "box", true)]
+fn exclude_dir_matches_operand_as_written(
+    #[case] pattern: &str,
+    #[case] operand: &str,
+    #[case] excluded: bool,
+) {
+    let (scene, mut c) = ucmd();
+    scene.fixtures.mkdir_all("box/inner");
+    scene.fixtures.write("box/inner/f.txt", "hay\n");
+    let result = c
+        .args(&["-r", &format!("--exclude-dir={pattern}"), "hay", operand])
+        .run();
+    if excluded {
+        result.code_is(1).no_output();
+    } else {
+        result.success().stdout_contains("f.txt:hay").no_stderr();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn diagnostics_follow_earlier_output() {
+    use std::process::{Command, Stdio};
+    let (scene, _) = ucmd();
+    scene.fixtures.write("a.txt", "foo a\n");
+    scene.fixtures.write("bin.dat", "foo\0bin\n");
+    scene.fixtures.write("b.txt", "foo b\n");
+    let log = std::fs::File::create(scene.fixtures.plus("log")).unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_grep"))
+        .current_dir(scene.fixtures.as_string())
+        .args(["foo", "a.txt", "bin.dat", "missing.txt", "b.txt"])
+        .stdout(Stdio::from(log.try_clone().unwrap()))
+        .stderr(Stdio::from(log))
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(2));
+    assert_eq!(
+        scene.fixtures.read("log"),
+        "a.txt:foo a\ngrep: bin.dat: binary file matches\ngrep: missing.txt: No such file or directory\nb.txt:foo b\n"
+    );
 }

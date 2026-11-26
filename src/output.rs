@@ -222,8 +222,9 @@ impl<'a> OutputWriter<'a> {
     }
 
     /// Write an IO error to stderr.
-    pub fn report_io_error(&self, label: &OsStr, err: &io::Error) {
+    pub fn report_io_error(&mut self, label: &OsStr, err: &io::Error) {
         if !self.config.no_messages {
+            let _ = self.out.flush();
             // Strip the trailing " (os error XX)" so the message matches GNU grep.
             let _ = writeln!(
                 io::stderr(),
@@ -235,7 +236,8 @@ impl<'a> OutputWriter<'a> {
     }
 
     /// Write the "binary file matches" message to stderr.
-    pub fn report_binary_match(&self, path: &Path) {
+    pub fn report_binary_match(&mut self, path: &Path) {
+        let _ = self.out.flush();
         let _ = writeln!(
             io::stderr(),
             "grep: {}: binary file matches",
