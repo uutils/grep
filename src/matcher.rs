@@ -454,8 +454,17 @@ impl CompiledPattern {
         offset: usize,
         first: &mut usize,
     ) -> Option<(usize, usize)> {
-        let whole = [(0, line.len())];
-        let segments = segments.unwrap_or(&whole);
+        let Some(segments) = segments else {
+            // Whole line is one valid run: the plain search, no segment work.
+            let mut region = Region::new();
+            self.leftmost.search(
+                line,
+                offset,
+                Some(&mut region),
+                SearchOptions::SEARCH_OPTION_NONE,
+            )?;
+            return region.pos(0);
+        };
         for (index, &(seg_start, seg_end)) in segments.iter().enumerate().skip(*first) {
             if seg_end < offset {
                 *first = index + 1;
@@ -488,9 +497,17 @@ impl CompiledPattern {
         start: usize,
         first: usize,
     ) -> Option<usize> {
-        let whole = [(0, line.len())];
+        let Some(segments) = segments else {
+            let mut region = Region::new();
+            self.longest_anchored.match_at(
+                line,
+                start,
+                Some(&mut region),
+                SearchOptions::SEARCH_OPTION_NONE,
+            );
+            return region.pos(0).map(|(_, end)| end);
+        };
         let (seg_start, seg_end) = segments
-            .unwrap_or(&whole)
             .iter()
             .skip(first)
             .copied()
