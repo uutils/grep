@@ -115,12 +115,10 @@ impl<'a> OutputWriter<'a> {
                 }
                 if start < end {
                     let match_bytes = &view.line[start..end];
-                    let match_color = if view.is_match {
-                        self.config.color_config.matched_selected
-                    } else {
-                        self.config.color_config.matched_context
-                    };
-                    self.write_colored_bytes(match_color, match_bytes)?;
+                    self.write_colored_bytes(
+                        self.config.color_config.matched_selected,
+                        match_bytes,
+                    )?;
                     if has_line_color {
                         self.write_colored_prefix(line_color)?;
                     }
