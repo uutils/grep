@@ -150,6 +150,39 @@ pub struct Config<'a> {
     pub color_config: ColorConfig<'a>,
 }
 
+/// GNU's three-line report for an option grep doesn't know, in place of
+/// clap's `error:` block. `None` for any other parse error.
+fn unknown_option_error(err: &clap::Error, args: &[OsString]) -> Option<Box<dyn UError>> {
+    if err.kind() != clap::error::ErrorKind::UnknownArgument {
+        return None;
+    }
+    let arg = err.get(clap::error::ContextKind::InvalidArg)?.to_string();
+    let problem = if arg.starts_with("--") {
+        // clap names `--foo` for `--foo=bar` but GNU names the whole argument.
+        // The shortest argv prefix that fails the same way ends with the rejected one.
+        let given = (1..=args.len())
+            .find(|&n| {
+                uu_app()
+                    .try_get_matches_from(&args[..n])
+                    .is_err_and(|e| e.kind() == clap::error::ErrorKind::UnknownArgument)
+            })
+            .and_then(|n| args[n - 1].to_str())
+            .filter(|a| a.starts_with(&format!("{arg}=")))
+            .unwrap_or(&arg);
+        format!("unrecognized option '{given}'")
+    } else {
+        format!("invalid option -- '{}'", arg.strip_prefix('-')?)
+    };
+    Some(USimpleError::new(
+        2,
+        format!(
+            "{problem}\n\
+             Usage: grep [OPTION]... PATTERNS [FILE]...\n\
+             Try 'grep --help' for more information."
+        ),
+    ))
+}
+
 /// A file named by `-f` or `--exclude-from` that cannot be read is a usage
 /// error for GNU grep: it exits 2, unlike the exit 1 of a search that found
 /// nothing.
@@ -175,9 +208,18 @@ fn read_pattern_file(path: &OsStr) -> UResult<String> {
 
 #[uucore::main(no_signals)]
 pub fn uumain(args: impl uucore::Args) -> UResult<()> {
-    let app = uu_app();
+    let mut app = uu_app();
     let args = expand_num_shorthand(&app, args);
-    let matches = uucore::clap_localization::handle_clap_result_with_exit_code(app, args, 2)?;
+    let matches = match app.try_get_matches_from_mut(&args) {
+        Ok(matches) => matches,
+        Err(err) => {
+            if let Some(err) = unknown_option_error(&err, &args) {
+                return Err(err);
+            }
+            // Other errors keep uucore's report, which parses the arguments again.
+            uucore::clap_localization::handle_clap_result_with_exit_code(app, args, 2)?
+        }
+    };
 
     // GNU grep ignores a malformed legacy match color without a warning.
     let grep_color = std::env::var("GREP_COLOR")
