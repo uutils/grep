@@ -344,6 +344,13 @@ impl CompiledPattern {
             pattern
         };
 
+        let null_data_normalized = if config.null_data {
+            Some(normalize_null_data_dollar(pattern, config.regex_mode))
+        } else {
+            None
+        };
+        let pattern = null_data_normalized.as_deref().unwrap_or(pattern);
+
         if config.regex_mode == RegexMode::Perl {
             // GNU grep supports `(?P<name>...)`.
             // Unfortunately, the onig crate defines the OP2 flag without the
@@ -364,9 +371,15 @@ impl CompiledPattern {
         // for `.` and negated bracket expressions `[^...]`, but PCRE keeps its
         // existing non-DOTALL behavior. The GNU `pcre-context` test documents
         // this as current behavior until PCRE2.
-        if config.null_data && matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended) {
-            options |= RegexOptions::REGEX_OPTION_MULTILINE;
-            syntax.disable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_NOT_NEWLINE_IN_NEGATIVE_CC);
+        if config.null_data {
+            options |= RegexOptions::REGEX_OPTION_SINGLELINE;
+            if matches!(config.regex_mode, RegexMode::Basic | RegexMode::Extended) {
+                options |= RegexOptions::REGEX_OPTION_MULTILINE;
+                syntax.disable_behavior(SyntaxBehavior::SYNTAX_BEHAVIOR_NOT_NEWLINE_IN_NEGATIVE_CC);
+            }
+            if config.regex_mode != RegexMode::Fixed {
+                syntax.enable_operators(SyntaxOperator::SYNTAX_OPERATOR_ESC_AZ_BUF_ANCHOR);
+            }
         }
 
         fn compile_with(
@@ -696,6 +709,93 @@ fn find_bracket_subexpr_end(pattern: &[u8], start: usize, delimiter: u8) -> Opti
     (start..pattern.len().saturating_sub(1))
         .find(|&i| pattern[i] == delimiter && pattern[i + 1] == b']')
         .map(|i| i + 2)
+}
+
+/// In `-z / --null-data` mode, a record ends at NUL (`\0`) and newline is ordinary data.
+/// Oniguruma's `SINGLELINE` option maps `$` to `ANCR_SEMI_END_BUF`, which matches before
+/// a trailing newline at the end of the buffer. In GNU grep, `$` under `-z` anchors strictly
+/// to the end of the buffer (`\z` / `ANCR_END_BUF`).
+///
+/// This helper replaces anchor `$` outside bracket expressions with `\z`.
+fn normalize_null_data_dollar(pattern: &str, mode: RegexMode) -> String {
+    if mode == RegexMode::Fixed || !pattern.contains('$') {
+        return pattern.to_string();
+    }
+
+    let bytes = pattern.as_bytes();
+    let mut out = String::with_capacity(pattern.len() + 8);
+    let mut i = 0;
+    let mut in_bracket = false;
+    let mut bracket_first = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_bracket {
+            out.push(b as char);
+            if bracket_first {
+                bracket_first = false;
+            } else if b == b']' {
+                in_bracket = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'\\' {
+            out.push('\\');
+            if i + 1 < bytes.len() {
+                out.push(bytes[i + 1] as char);
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+
+        if b == b'[' {
+            in_bracket = true;
+            bracket_first = true;
+            out.push('[');
+            if i + 1 < bytes.len() && bytes[i + 1] == b'^' {
+                out.push('^');
+                i += 2;
+            } else {
+                i += 1;
+            }
+            // In POSIX brackets, if the first character after `[` or `[^` is `]`,
+            // it is literal `]`, not the closing bracket.
+            if i < bytes.len() && bytes[i] == b']' {
+                out.push(']');
+                i += 1;
+                bracket_first = false;
+            }
+            continue;
+        }
+
+        if b == b'$' {
+            let is_anchor = match mode {
+                RegexMode::Perl | RegexMode::Extended => true,
+                RegexMode::Basic => {
+                    let rest = &bytes[i + 1..];
+                    rest.is_empty() || rest.starts_with(b"\\)") || rest.starts_with(b"\\|")
+                }
+                RegexMode::Fixed => false,
+            };
+
+            if is_anchor {
+                out.push_str(r"\z");
+            } else {
+                out.push_str(r"\$");
+            }
+            i += 1;
+            continue;
+        }
+
+        out.push(b as char);
+        i += 1;
+    }
+
+    out
 }
 
 #[cfg(test)]
