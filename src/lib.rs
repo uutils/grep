@@ -5,6 +5,7 @@
 
 #[doc(hidden)]
 pub mod context_buffer;
+mod glob;
 #[doc(hidden)]
 pub mod line_buffer;
 #[doc(hidden)]
@@ -12,6 +13,7 @@ pub mod matcher;
 mod output;
 mod searcher;
 
+use crate::glob::GlobSet;
 use crate::line_buffer::LineBuffer;
 use crate::matcher::Matcher;
 use crate::output::OutputWriter;
@@ -96,14 +98,6 @@ pub struct ColorConfig<'a> {
 
     /// Whether `GREP_COLOR` still sets a match color after `GREP_COLORS`.
     pub uses_grep_color: bool,
-}
-
-/// Include and exclude patterns, in command-line order. As in GNU grep, the
-/// last pattern that matches a name decides. If none matches, the name is
-/// skipped only when the first pattern is an include.
-#[doc(hidden)]
-pub struct GlobSet {
-    patterns: Vec<(bool, glob::Pattern)>,
 }
 
 #[doc(hidden)]
@@ -396,7 +390,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     globs.sort_by_key(|(i, _, _)| *i);
     let mut file_globs = GlobSet::with_capacity(globs.len());
     for (_, include, pattern) in &globs {
-        file_globs.add(*include, pattern)?;
+        file_globs.add(*include, pattern);
     }
     let exclude_dir_globs = {
         let mut patterns = GlobSet::with_capacity(exclude_dir.len());
@@ -409,7 +403,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
             } else {
                 normalized
             };
-            patterns.add(false, pattern)?;
+            patterns.add(false, pattern);
         }
         patterns
     };
@@ -1027,47 +1021,6 @@ fn long_option_takes_next_arg(cmd: &Command, name: &[u8]) -> bool {
         _ => return false,
     };
     arg.get_action().takes_values() && !arg.is_require_equals_set()
-}
-
-impl Default for GlobSet {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl GlobSet {
-    /// Create an empty GlobSet.
-    pub fn new() -> Self {
-        Self {
-            patterns: Vec::new(),
-        }
-    }
-
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            patterns: Vec::with_capacity(capacity),
-        }
-    }
-
-    fn add(&mut self, include: bool, pattern: &str) -> UResult<()> {
-        let compiled_pattern = glob::Pattern::new(pattern)
-            .map_err(|e| USimpleError::new(2, format!("invalid glob '{pattern}': {e}")))?;
-        self.patterns.push((include, compiled_pattern));
-        Ok(())
-    }
-
-    pub fn skips(&self, name: &OsStr) -> bool {
-        let last_match = name.to_str().and_then(|name| {
-            self.patterns
-                .iter()
-                .rev()
-                .find(|(_, pattern)| pattern.matches(name))
-        });
-        match last_match {
-            Some((include, _)) => !include,
-            None => self.patterns.first().is_some_and(|(include, _)| *include),
-        }
-    }
 }
 
 fn is_color_value(value: &str) -> bool {
