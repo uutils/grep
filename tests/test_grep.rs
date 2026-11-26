@@ -2751,4 +2751,47 @@ fn null_data_anchors_are_record_anchors() {
         .pipe_in("foo$bar\0")
         .succeeds()
         .stdout_only("1\n");
+
+    // In BRE, $ is literal unless at the end of the pattern or followed by \) or \|
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", "foo$bar"])
+        .pipe_in("foo$bar\0")
+        .succeeds()
+        .stdout_only("1\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", r"\(beta$\)"])
+        .pipe_in("alpha\nbeta\0")
+        .succeeds()
+        .stdout_only("1\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", r"foo$\|bar"])
+        .pipe_in("foo\0")
+        .succeeds()
+        .stdout_only("1\n");
+
+    // Bracket variations: negated bracket [^$] and leading ] bracket [^]$]
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", "[^$]"])
+        .pipe_in("x\0")
+        .succeeds()
+        .stdout_only("1\n");
+
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", "[]$]"])
+        .pipe_in("$\0")
+        .succeeds()
+        .stdout_only("1\n");
+
+    // Fixed strings mode
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-F", "-c", "foo$"])
+        .pipe_in("foo$\0")
+        .succeeds()
+        .stdout_only("1\n");
+
+    // Trailing backslash in pattern
+    let (_s, mut c) = ucmd();
+    c.args(&["-z", "-c", "foo\\"]).fails_with_code(2);
 }

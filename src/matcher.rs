@@ -785,7 +785,7 @@ fn normalize_null_data_dollar(pattern: &str, mode: RegexMode) -> String {
             if is_anchor {
                 out.push_str(r"\z");
             } else {
-                out.push('$');
+                out.push_str(r"\$");
             }
             i += 1;
             continue;
