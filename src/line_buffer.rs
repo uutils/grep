@@ -24,6 +24,28 @@ pub struct LineBuffer {
     eof: bool,
     /// The line terminator is typically NUL or LF.
     line_terminator: u8,
+
+    /// Index of the first non-ASCII byte found in `buffer[..ascii_scanned]`, or
+    /// `usize::MAX` when that range is all ASCII.
+    non_ascii: usize,
+    /// Bytes of `buffer` that were already checked for non-ASCII bytes.
+    ascii_scanned: usize,
+    /// Lines are asked about in order, so every line that starts at or after the
+    /// last scan start and ends at `ascii_limit` or before is known to be ASCII.
+    ascii_limit: usize,
+}
+
+/// Index of the first non-ASCII byte of `bytes`, if any.
+fn first_non_ascii(bytes: &[u8]) -> Option<usize> {
+    const BLOCK: usize = 64;
+    let mut base = 0;
+    for block in bytes.chunks(BLOCK) {
+        if !block.is_ascii() {
+            return block.iter().position(|b| !b.is_ascii()).map(|i| base + i);
+        }
+        base += block.len();
+    }
+    None
 }
 
 impl LineBuffer {
@@ -38,7 +60,46 @@ impl LineBuffer {
             next_line_start: 0,
             eof: false,
             line_terminator,
+
+            non_ascii: usize::MAX,
+            ascii_scanned: 0,
+            ascii_limit: 0,
         }
+    }
+
+    /// Forget what is known about which bytes are ASCII (the data moved).
+    fn forget_ascii(&mut self) {
+        self.non_ascii = usize::MAX;
+        self.ascii_scanned = 0;
+        self.ascii_limit = 0;
+    }
+
+    /// Whether `buffer[start..end]` is pure ASCII, hence valid UTF-8. The data
+    /// is checked once per byte in large blocks instead of once per line, so
+    /// asking for every line of a mostly ASCII file costs next to nothing.
+    #[inline]
+    fn range_is_ascii(&mut self, start: usize, end: usize) -> bool {
+        end <= self.ascii_limit || self.scan_for_ascii(start, end)
+    }
+
+    #[cold]
+    fn scan_for_ascii(&mut self, start: usize, end: usize) -> bool {
+        if self.non_ascii < start {
+            // The known non-ASCII byte is behind us: look further ahead.
+            self.forget_ascii();
+            self.ascii_scanned = start;
+        }
+        if self.non_ascii == usize::MAX && self.ascii_scanned < self.end {
+            match first_non_ascii(&self.buffer[self.ascii_scanned..self.end]) {
+                Some(i) => {
+                    self.non_ascii = self.ascii_scanned + i;
+                    self.ascii_scanned = self.non_ascii;
+                }
+                None => self.ascii_scanned = self.end,
+            }
+        }
+        self.ascii_limit = self.non_ascii.min(self.ascii_scanned);
+        end <= self.ascii_limit
     }
 
     /// Reset the buffer to an empty state.
@@ -48,13 +109,15 @@ impl LineBuffer {
         self.end = 0;
         self.next_line_start = 0;
         self.eof = false;
+        self.forget_ascii();
     }
 
     /// Read the next line from the given reader.
     /// Returns `Ok(None)` if the end of the reader is reached.
     /// Otherwise, returns `Ok(Some((line, line_start)))`, where `line` is the line read (without the
     /// `line_terminator`), and `line_start` is the absolute byte offset of the start of the line.
-    pub fn read_line(&mut self, file: &mut File) -> io::Result<Option<(&[u8], u64)>> {
+    /// The last element tells whether `line` is pure ASCII.
+    pub fn read_line(&mut self, file: &mut File) -> io::Result<Option<(&[u8], u64, bool)>> {
         if self.eof {
             return Ok(None);
         }
@@ -65,11 +128,12 @@ impl LineBuffer {
                 let line_start = self.next_line_start;
                 let beg = self.beg;
                 let end = self.scan + off;
+                let ascii = self.range_is_ascii(beg, end);
                 let line = &self.buffer[beg..end];
                 self.beg = end + 1;
                 self.scan = self.beg;
                 self.next_line_start += (self.beg - beg) as u64;
-                return Ok(Some((line, line_start)));
+                return Ok(Some((line, line_start, ascii)));
             }
 
             // `buffer[pos..end]` has no terminator. Remember that for the next scan.
@@ -83,6 +147,7 @@ impl LineBuffer {
                 self.end -= self.beg;
                 self.scan -= self.beg;
                 self.beg = 0;
+                self.forget_ascii();
             }
             if self.end == self.buffer.len() {
                 // A single line exceeds the current buffer; grow.
@@ -102,10 +167,11 @@ impl LineBuffer {
                 return if self.beg == self.end {
                     Ok(None)
                 } else {
+                    let ascii = self.range_is_ascii(self.beg, self.end);
                     let line = &self.buffer[self.beg..self.end];
                     let line_start = self.next_line_start;
                     self.eof = true; // shortcut the next call to read_line()
-                    Ok(Some((line, line_start)))
+                    Ok(Some((line, line_start, ascii)))
                 };
             }
             self.end += n;
@@ -156,6 +222,7 @@ impl LineBuffer {
                 self.end -= self.beg;
                 self.beg = 0;
                 self.scan = 0;
+                self.forget_ascii();
             }
             if self.end == self.buffer.len() {
                 // A single line is longer than the whole buffer; grow it.
@@ -224,6 +291,51 @@ mod tests {
             out.push((chunk.to_vec(), start));
         }
         out
+    }
+
+    /// Read every line with `read_line`, returning (bytes, is_ascii) pairs.
+    fn lines_with_ascii(content: &[u8]) -> Vec<(Vec<u8>, bool)> {
+        let mut lb = LineBuffer::new(b'\n');
+        let mut input = temp_input(content);
+        let mut out = Vec::new();
+        while let Some((line, _, ascii)) = lb.read_line(&mut input.file).unwrap() {
+            out.push((line.to_vec(), ascii));
+        }
+        out
+    }
+
+    #[test]
+    fn read_line_reports_which_lines_are_ascii() {
+        let got = lines_with_ascii(b"abc\n\xffx\nplain\ncaf\xc3\xa9\nlast");
+        let flags: Vec<bool> = got.iter().map(|(_, a)| *a).collect();
+        assert_eq!(flags, [true, false, true, false, true]);
+    }
+
+    #[test]
+    fn read_line_ascii_flag_matches_is_ascii_across_buffer_refills() {
+        // Larger than the 128 KiB buffer, with non-ASCII bytes sprinkled at
+        // positions that fall on and off line starts and refill boundaries.
+        let mut content = Vec::new();
+        for i in 0..60_000u32 {
+            content.extend_from_slice(format!("line number {i}").as_bytes());
+            match i % 977 {
+                0 => content.push(0xff),
+                1 => content.extend_from_slice("\u{e9}".as_bytes()),
+                _ => {}
+            }
+            content.push(b'\n');
+        }
+        assert!(content.len() > 2 * 128 * 1024);
+        let got = lines_with_ascii(&content);
+        assert_eq!(got.len(), 60_000);
+        for (line, ascii) in &got {
+            assert_eq!(
+                *ascii,
+                line.is_ascii(),
+                "{:?}",
+                String::from_utf8_lossy(line)
+            );
+        }
     }
 
     #[test]

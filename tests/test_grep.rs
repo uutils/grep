@@ -2541,6 +2541,131 @@ fn ere_trailing_backslash_is_error() {
         .no_stdout();
 }
 
+#[test]
+fn dot_and_negated_matchers_skip_invalid_utf8() {
+    // A byte that does not start a valid character is not a character, so
+    // `.`, `\S` and `-x '.*'` must not step over it.
+    let input = &b"ok\nz\xffz\nz\xc0\x80z\nz\xe4\xb8\xadz\n"[..];
+    let cases: &[&[&str]] = &[
+        &["-a", "-c", "z.z"],
+        &["-a", "-c", "-E", r"z\Sz"],
+        &["-a", "-c", "-E", "z[^a]z"],
+    ];
+    for args in cases {
+        let (_s, mut c) = ucmd();
+        c.env("LC_ALL", "C.UTF-8")
+            .args(args)
+            .pipe_in(input)
+            .succeeds()
+            .stdout_only("1\n");
+    }
+
+    // A pattern file keeps Windows wildcard expansion from rewriting `.*`.
+    let (scene, mut c) = ucmd();
+    scene.fixtures.write("patterns", ".*\n");
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-v", "-x", "-f", "patterns"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only_bytes(&b"z\xffz\nz\xc0\x80z\n"[..]);
+}
+
+#[test]
+fn anchors_still_match_only_at_line_edges_around_invalid_utf8() {
+    let (_s, mut c) = ucmd();
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-c", "^b"])
+        .pipe_in(&b"a\xffb\n"[..])
+        .fails_with_code(1)
+        .stdout_only("0\n");
+    let (_s, mut c) = ucmd();
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-c", "a$"])
+        .pipe_in(&b"a\xffb\n"[..])
+        .fails_with_code(1)
+        .stdout_only("0\n");
+    let (_s, mut c) = ucmd();
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-o", "^a.*"])
+        .pipe_in(&b"a\xffb\nab\n"[..])
+        .succeeds()
+        .stdout_only("a\nab\n");
+}
+
+#[test]
+fn only_matching_on_many_invalid_utf8_bytes_stays_linear() {
+    // One line with 200,000 valid runs separated by invalid bytes. Looking each
+    // match up from the first run again would take minutes; a cursor that
+    // keeps its place finishes in about a second.
+    let runs = 200_000;
+    let input = b"a\xff".repeat(runs);
+    let expected = "a\n".repeat(runs);
+    let start = std::time::Instant::now();
+    let (_s, mut c) = ucmd();
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-o", "a"])
+        .pipe_in(input.clone())
+        .succeeds()
+        .stdout_only(&expected);
+    let (_s, mut c) = ucmd();
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-o", "-e", "a", "-e", "b"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only(&expected);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(60),
+        "-o over many invalid UTF-8 runs took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn ascii_and_utf8_lines_around_invalid_lines_keep_their_matches() {
+    // Lines with and without invalid bytes, ASCII and multibyte, in one input.
+    let input = &b"abc\nz\xffz\ncaf\xc3\xa9 z.z\nz\xc3\xa9z\nxyz\n"[..];
+    let (_s, mut c) = ucmd();
+    c.env("LC_ALL", "C.UTF-8")
+        .args(&["-a", "-n", "z.z"])
+        .pipe_in(input)
+        .succeeds()
+        .stdout_only("3:caf\u{e9} z.z\n4:z\u{e9}z\n");
+}
+
+#[test]
+fn byte_locales_match_non_ascii_bytes() {
+    let input = &b"a\nz\xffz\nb\n"[..];
+    for locale in ["C", "POSIX"] {
+        let (_scene, mut cmd) = ucmd();
+        cmd.env("LC_ALL", locale)
+            .env("LC_CTYPE", "C.UTF-8")
+            .env("LANG", "C.UTF-8")
+            .args(&["-a", "-c", "z.z"])
+            .pipe_in(input)
+            .succeeds()
+            .stdout_only("1\n");
+
+        let (_scene, mut cmd) = ucmd();
+        cmd.env("LC_ALL", "")
+            .env("LC_CTYPE", locale)
+            .env("LANG", "C.UTF-8")
+            .args(&["-a", "-o", "z.z"])
+            .pipe_in(input)
+            .succeeds()
+            .stdout_only_bytes(&b"z\xffz\n"[..]);
+    }
+
+    let (scene, mut cmd) = ucmd();
+    scene.fixtures.write_bytes("binary-input", b"a\n\xff\nb\n");
+    cmd.env("LC_ALL", "")
+        .env("LC_CTYPE", "")
+        .env("LANG", "C")
+        .args(&[".", "binary-input"])
+        .succeeds()
+        .stdout_is("a\n")
+        .stderr_contains("binary file matches");
+}
+
 #[cfg(unix)]
 #[test]
 fn non_utf8_pattern_file_name_and_label() {
