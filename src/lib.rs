@@ -203,7 +203,10 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let null_data = matches.get_flag("null_data");
     let no_messages = matches.get_flag("no_messages");
     let invert_match = matches.get_flag("invert_match");
-    let max_count = matches.get_one::<u64>("max_count").copied();
+    let max_count = matches
+        .get_one::<Option<u64>>("max_count")
+        .copied()
+        .flatten();
     let byte_offset = matches.get_flag("byte_offset");
     let line_number = matches.get_flag("line_number");
     let stdout_is_terminal = std::io::stdout().is_terminal();
@@ -535,6 +538,45 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     searcher.finish()
 }
 
+fn parse_max_count(s: &str) -> Result<Option<u64>, String> {
+    let trimmed = s.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    if trimmed.is_empty() {
+        return Err("invalid digit found in string".to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix('-') {
+        if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+            return Ok(None);
+        }
+        return Err("invalid digit found in string".to_string());
+    }
+    let digits = trimmed.strip_prefix('+').unwrap_or(trimmed);
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err("invalid digit found in string".to_string());
+    }
+    match digits.parse::<u64>() {
+        Ok(n) => Ok(Some(n)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn parse_context_count(s: &str) -> Result<usize, String> {
+    let trimmed = s.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    if trimmed.is_empty() {
+        return Err("invalid digit found in string".to_string());
+    }
+    if trimmed.starts_with('-') {
+        return Err("invalid digit found in string".to_string());
+    }
+    let digits = trimmed.strip_prefix('+').unwrap_or(trimmed);
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err("invalid digit found in string".to_string());
+    }
+    match digits.parse::<usize>() {
+        Ok(n) => Ok(n),
+        Err(_) => Ok(usize::MAX),
+    }
+}
+
 pub fn uu_app() -> Command {
     Command::new("grep")
         .version(env!("CARGO_PKG_VERSION"))
@@ -676,7 +718,8 @@ pub fn uu_app() -> Command {
                 .long("max-count")
                 .value_name("NUM")
                 .help("stop after NUM selected lines")
-                .value_parser(clap::value_parser!(u64)),
+                .allow_hyphen_values(true)
+                .value_parser(parse_max_count),
         )
         .arg(
             Arg::new("byte_offset")
@@ -862,7 +905,7 @@ pub fn uu_app() -> Command {
                 .long("before-context")
                 .value_name("NUM")
                 .help("print NUM lines of leading context")
-                .value_parser(clap::value_parser!(usize)),
+                .value_parser(parse_context_count),
         )
         .arg(
             Arg::new("after_context")
@@ -870,7 +913,7 @@ pub fn uu_app() -> Command {
                 .long("after-context")
                 .value_name("NUM")
                 .help("print NUM lines of trailing context")
-                .value_parser(clap::value_parser!(usize)),
+                .value_parser(parse_context_count),
         )
         .arg(
             Arg::new("context")
@@ -878,7 +921,7 @@ pub fn uu_app() -> Command {
                 .long("context")
                 .value_name("NUM")
                 .help("print NUM lines of output context")
-                .value_parser(clap::value_parser!(usize)),
+                .value_parser(parse_context_count),
         )
         .arg(
             Arg::new("group_separator")
