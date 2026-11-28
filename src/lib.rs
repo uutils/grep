@@ -1003,35 +1003,77 @@ fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
     out
 }
 
-/// Long options that read their value from the next argument. Keep in sync
-/// with `uu_app()`; `long_option_list_matches_uu_app` checks it.
-const LONG_OPTS_WITH_VALUE: &[&str] = &[
-    "regexp",
-    "file",
-    "max-count",
-    "label",
-    "after-context",
-    "before-context",
-    "context",
-    "devices",
-    "directories",
-    "binary-files",
-    "include",
-    "exclude",
-    "exclude-from",
-    "exclude-dir",
-    "group-separator",
+/// Every long option with its aliases, and whether it reads its value from the
+/// next argument. Keep in sync with `uu_app()`; `long_option_table_matches_uu_app`
+/// checks it.
+const LONG_OPTS: &[(&[&str], bool)] = &[
+    (&["extended-regexp"], false),
+    (&["fixed-strings"], false),
+    (&["basic-regexp"], false),
+    (&["perl-regexp"], false),
+    (&["regexp"], true),
+    (&["file"], true),
+    (&["ignore-case"], false),
+    (&["no-ignore-case"], false),
+    (&["word-regexp"], false),
+    (&["line-regexp"], false),
+    (&["null-data"], false),
+    (&["no-messages"], false),
+    (&["invert-match"], false),
+    (&["version"], false),
+    (&["help"], false),
+    (&["max-count"], true),
+    (&["byte-offset"], false),
+    (&["line-number"], false),
+    (&["line-buffered"], false),
+    (&["with-filename"], false),
+    (&["no-filename"], false),
+    (&["label"], true),
+    (&["only-matching"], false),
+    (&["quiet", "silent"], false),
+    (&["binary-files"], true),
+    (&["text"], false),
+    (&["directories"], true),
+    (&["devices"], true),
+    (&["recursive"], false),
+    (&["dereference-recursive"], false),
+    (&["include"], true),
+    (&["exclude"], true),
+    (&["exclude-from"], true),
+    (&["exclude-dir"], true),
+    (&["files-without-match"], false),
+    (&["files-with-matches"], false),
+    (&["count"], false),
+    (&["initial-tab"], false),
+    (&["null"], false),
+    (&["before-context"], true),
+    (&["after-context"], true),
+    (&["context"], true),
+    (&["group-separator"], true),
+    (&["no-group-separator"], false),
+    (&["color", "colour"], false),
+    (&["binary"], false),
 ];
 
 /// Whether the long option `name` (the part after `--`) reads its value from
-/// the next argument. `name` may be any prefix of an option, as accepted by
-/// `infer_long_args`. A prefix that is ambiguous is rejected by clap anyway.
+/// the next argument. `name` may be abbreviated the way clap's
+/// `infer_long_args` resolves it: an exact name wins, otherwise the prefix must
+/// select a single option. Anything clap will reject is reported as `false`.
 fn long_option_takes_next_arg(name: &[u8]) -> bool {
-    // `--binary` is a flag of its own, though also a prefix of `--binary-files`.
-    name != b"binary"
-        && LONG_OPTS_WITH_VALUE
-            .iter()
-            .any(|opt| opt.as_bytes().starts_with(name))
+    let starts_with_name = |opt: &&str| opt.as_bytes().starts_with(name);
+    if let Some((_, takes_value)) = LONG_OPTS
+        .iter()
+        .find(|(names, _)| names.iter().any(|n| n.as_bytes() == name))
+    {
+        return *takes_value;
+    }
+    let mut prefixed = LONG_OPTS
+        .iter()
+        .filter(|(names, _)| names.iter().any(starts_with_name));
+    match (prefixed.next(), prefixed.next()) {
+        (Some((_, takes_value)), None) => *takes_value,
+        _ => false,
+    }
 }
 
 impl Default for GlobSet {
@@ -1157,16 +1199,43 @@ mod long_option_tests {
     use super::*;
 
     #[test]
-    fn long_option_list_matches_uu_app() {
+    fn long_option_table_matches_uu_app() {
         let app = uu_app();
-        let mut expected: Vec<&str> = app
+        let mut expected: Vec<(Vec<&str>, bool)> = app
             .get_arguments()
-            .filter(|arg| arg.get_action().takes_values() && !arg.is_require_equals_set())
-            .filter_map(Arg::get_long)
+            .filter_map(|arg| {
+                let mut names = vec![arg.get_long()?];
+                names.extend(arg.get_all_aliases().unwrap_or_default());
+                let takes_value = arg.get_action().takes_values() && !arg.is_require_equals_set();
+                Some((names, takes_value))
+            })
             .collect();
-        let mut actual = LONG_OPTS_WITH_VALUE.to_vec();
+        let mut actual: Vec<(Vec<&str>, bool)> = LONG_OPTS
+            .iter()
+            .map(|(names, takes_value)| (names.to_vec(), *takes_value))
+            .collect();
         expected.sort_unstable();
         actual.sort_unstable();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn takes_next_arg() {
+        let cases: &[(&[u8], bool)] = &[
+            (b"regexp", true),
+            (b"reg", true),
+            (b"colo", false),
+            // An exact name wins over the longer option it is a prefix of.
+            (b"binary", false),
+            (b"binary-f", true),
+            // Ambiguous prefixes and unknown names are rejected by clap.
+            (b"e", false),
+            (b"ex", false),
+            (b"nope", false),
+            (b"reg=x", false),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(long_option_takes_next_arg(name), *expected, "{name:?}");
+        }
     }
 }
