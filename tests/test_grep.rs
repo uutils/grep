@@ -179,6 +179,21 @@ fn character_class_lookalike_is_valid(#[case] args: &[&str]) {
     c.args(args).pipe_in("w[:digit:]7d\n").succeeds();
 }
 
+#[rstest]
+#[case::bre(&["-c", r"bz\{,\}"], "b\nbzzz\nq\n", "2\n")]
+#[case::ere(&["-c", "-E", "bz{,}"], "b\nbzzz\nq\n", "2\n")]
+// Escaped braces and bracket expressions stay literal.
+#[case::ere_escaped_braces(&["-E", r"a\{,\}"], "a{,}\na\n", "a{,}\n")]
+#[case::ere_bracket(&["-E", "[{,}]"], "{\n,\n}\nx\n", "{\n,\n}\n")]
+fn empty_interval_means_zero_or_more(
+    #[case] args: &[&str],
+    #[case] input: &str,
+    #[case] expected: &str,
+) {
+    let (_s, mut c) = ucmd();
+    c.args(args).pipe_in(input).succeeds().stdout_only(expected);
+}
+
 #[test]
 fn max_count_rewinds_seekable_stdin() {
     // -m stops mid-input after reading ahead. When standard input can seek,
