@@ -179,22 +179,19 @@ fn character_class_lookalike_is_valid(#[case] args: &[&str]) {
     c.args(args).pipe_in("w[:digit:]7d\n").succeeds();
 }
 
-#[test]
-fn empty_interval_means_zero_or_more() {
-    for args in [&["-c", r"bz\{,\}"][..], &["-c", "-E", "bz{,}"][..]] {
-        let (_s, mut c) = ucmd();
-        c.args(args)
-            .pipe_in("b\nbzzz\nq\n")
-            .succeeds()
-            .stdout_only("2\n");
-    }
-
-    // Escaped braces and bracket expressions stay literal.
+#[rstest]
+#[case::bre(&["-c", r"bz\{,\}"], "b\nbzzz\nq\n", "2\n")]
+#[case::ere(&["-c", "-E", "bz{,}"], "b\nbzzz\nq\n", "2\n")]
+// Escaped braces and bracket expressions stay literal.
+#[case::ere_escaped_braces(&["-E", r"a\{,\}"], "a{,}\na\n", "a{,}\n")]
+#[case::ere_bracket(&["-E", "[{,}]"], "{\n,\n}\nx\n", "{\n,\n}\n")]
+fn empty_interval_means_zero_or_more(
+    #[case] args: &[&str],
+    #[case] input: &str,
+    #[case] expected: &str,
+) {
     let (_s, mut c) = ucmd();
-    c.args(&["-E", r"a\{,\}"])
-        .pipe_in("a{,}\na\n")
-        .succeeds()
-        .stdout_only("a{,}\n");
+    c.args(args).pipe_in(input).succeeds().stdout_only(expected);
 }
 
 #[test]

@@ -579,36 +579,32 @@ fn normalize_empty_intervals(pattern: &str, mode: RegexMode) -> Cow<'_, str> {
     }
 
     let bytes = pattern.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len() + 4);
+    let mut out = String::with_capacity(pattern.len() + 4);
+    // Start of the part of `pattern` not copied to `out` yet. Only ASCII bytes
+    // are inspected, so every index used to slice `pattern` is a char boundary.
+    let mut copied = 0;
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'[' => {
-                let next = scan_bracket(bytes, i + 1).1;
-                out.extend_from_slice(&bytes[i..next]);
-                i = next;
+            b'[' => i = scan_bracket(bytes, i + 1).1,
+            b'\\' if mode == RegexMode::Basic && bytes[i..].starts_with(b"\\{,\\}") => {
+                out.push_str(&pattern[copied..i]);
+                out.push_str("\\{0,\\}");
+                i += 5;
+                copied = i;
             }
-            b'\\' => {
-                if mode == RegexMode::Basic && bytes[i..].starts_with(b"\\{,\\}") {
-                    out.extend_from_slice(b"\\{0,\\}");
-                    i += 5;
-                } else {
-                    let next = (i + 2).min(bytes.len());
-                    out.extend_from_slice(&bytes[i..next]);
-                    i = next;
-                }
-            }
+            b'\\' => i = (i + 2).min(bytes.len()),
             b'{' if mode == RegexMode::Extended && bytes[i..].starts_with(b"{,}") => {
-                out.extend_from_slice(b"{0,}");
+                out.push_str(&pattern[copied..i]);
+                out.push_str("{0,}");
                 i += 3;
+                copied = i;
             }
-            b => {
-                out.push(b);
-                i += 1;
-            }
+            _ => i += 1,
         }
     }
-    Cow::Owned(String::from_utf8(out).expect("rewritten pattern stays valid UTF-8"))
+    out.push_str(&pattern[copied..]);
+    Cow::Owned(out)
 }
 
 fn strip_leading_repeat_operator(pattern: &str) -> Option<(&'static str, &str)> {
