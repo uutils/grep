@@ -60,11 +60,9 @@ jobs:
           LLVM_PROFILE_FILE: "${{ github.workspace }}/grep-%p-%m.profraw"
 
       - name: Install grcov
-        shell: bash
-        run: |
-          git clone --depth=1 https://github.com/mozilla/grcov.git ~/grcov/
-          cd ~/grcov
-          cargo install --path .
+        uses: taiki-e/install-action@v2
+        with:
+          tool: grcov
 
       - name: Generate coverage data (via grcov)
         id: coverage
