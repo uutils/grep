@@ -2698,23 +2698,26 @@ fn diagnostics_follow_earlier_output() {
     );
 }
 
-#[test]
-fn missing_option_argument_exits_with_code_two() {
-    for flag in [
-        "-e",
-        "-f",
-        "-m",
-        "-A",
-        "-B",
-        "-C",
-        "--regexp",
-        "--file",
-        "--max-count",
-        "--after-context",
-        "--before-context",
-        "--context",
-    ] {
-        let (_s, mut c) = ucmd();
-        c.arg(flag).pipe_in("foo\n").fails_with_code(2);
-    }
+#[rstest]
+#[case::short_regexp("-e")]
+#[case::short_file("-f")]
+#[case::short_max_count("-m")]
+#[case::short_after("-A")]
+#[case::short_before("-B")]
+#[case::short_context("-C")]
+#[case::regexp("--regexp")]
+#[case::file("--file")]
+#[case::max_count("--max-count")]
+#[case::after_context("--after-context")]
+#[case::before_context("--before-context")]
+#[case::context("--context")]
+#[case::invalid_binary_files("--binary-files=foo")]
+#[case::invalid_devices("--devices=foo")]
+fn option_argument_errors_exit_with_code_two(#[case] flag: &str) {
+    let (_s, mut c) = ucmd();
+    c.arg(flag)
+        .pipe_in("foo\n")
+        .fails_with_code(2)
+        .no_stdout()
+        .stderr_contains("error: ");
 }
