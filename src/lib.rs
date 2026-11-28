@@ -175,9 +175,8 @@ fn read_pattern_file(path: &OsStr) -> UResult<String> {
 
 #[uucore::main(no_signals)]
 pub fn uumain(args: impl uucore::Args) -> UResult<()> {
-    let app = uu_app();
-    let args = expand_num_shorthand(&app, args);
-    let matches = uucore::clap_localization::handle_clap_result_with_exit_code(app, args, 2)?;
+    let args = expand_num_shorthand(args);
+    let matches = uucore::clap_localization::handle_clap_result_with_exit_code(uu_app(), args, 2)?;
 
     // GNU grep ignores a malformed legacy match color without a warning.
     let grep_color = std::env::var("GREP_COLOR")
@@ -918,7 +917,7 @@ pub fn uu_app() -> Command {
 /// Expand GNU grep's `-NUM` shorthand to `-C NUM`.
 ///
 /// Note that `-a12b` means `-a -C 12 -b`.
-fn expand_num_shorthand(cmd: &Command, args: impl Iterator<Item = OsString>) -> Vec<OsString> {
+fn expand_num_shorthand(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
     const SHORT_OPTS_WITH_VALUE: &[u8] = b"efmABCDd";
 
     // Rebuild a single option argument out of `prefix` and `bytes`.
@@ -951,7 +950,7 @@ fn expand_num_shorthand(cmd: &Command, args: impl Iterator<Item = OsString>) -> 
 
         // Skip --long options, and the next argument if it is their value.
         if let Some(name) = arg.strip_prefix(b"-") {
-            i += 1 + usize::from(long_option_takes_next_arg(cmd, name));
+            i += 1 + usize::from(long_option_takes_next_arg(name));
             continue;
         }
 
@@ -1004,29 +1003,77 @@ fn expand_num_shorthand(cmd: &Command, args: impl Iterator<Item = OsString>) -> 
     out
 }
 
+/// Every long option with its aliases, and whether it reads its value from the
+/// next argument. Keep in sync with `uu_app()`; `long_option_table_matches_uu_app`
+/// checks it.
+const LONG_OPTS: &[(&[&str], bool)] = &[
+    (&["extended-regexp"], false),
+    (&["fixed-strings"], false),
+    (&["basic-regexp"], false),
+    (&["perl-regexp"], false),
+    (&["regexp"], true),
+    (&["file"], true),
+    (&["ignore-case"], false),
+    (&["no-ignore-case"], false),
+    (&["word-regexp"], false),
+    (&["line-regexp"], false),
+    (&["null-data"], false),
+    (&["no-messages"], false),
+    (&["invert-match"], false),
+    (&["version"], false),
+    (&["help"], false),
+    (&["max-count"], true),
+    (&["byte-offset"], false),
+    (&["line-number"], false),
+    (&["line-buffered"], false),
+    (&["with-filename"], false),
+    (&["no-filename"], false),
+    (&["label"], true),
+    (&["only-matching"], false),
+    (&["quiet", "silent"], false),
+    (&["binary-files"], true),
+    (&["text"], false),
+    (&["directories"], true),
+    (&["devices"], true),
+    (&["recursive"], false),
+    (&["dereference-recursive"], false),
+    (&["include"], true),
+    (&["exclude"], true),
+    (&["exclude-from"], true),
+    (&["exclude-dir"], true),
+    (&["files-without-match"], false),
+    (&["files-with-matches"], false),
+    (&["count"], false),
+    (&["initial-tab"], false),
+    (&["null"], false),
+    (&["before-context"], true),
+    (&["after-context"], true),
+    (&["context"], true),
+    (&["group-separator"], true),
+    (&["no-group-separator"], false),
+    (&["color", "colour"], false),
+    (&["binary"], false),
+];
+
 /// Whether the long option `name` (the part after `--`) reads its value from
 /// the next argument. `name` may be abbreviated the way clap's
 /// `infer_long_args` resolves it: an exact name wins, otherwise the prefix must
 /// select a single option. Anything clap will reject is reported as `false`.
-fn long_option_takes_next_arg(cmd: &Command, name: &[u8]) -> bool {
-    if name.contains(&b'=') {
-        return false;
+fn long_option_takes_next_arg(name: &[u8]) -> bool {
+    let starts_with_name = |opt: &&str| opt.as_bytes().starts_with(name);
+    if let Some((_, takes_value)) = LONG_OPTS
+        .iter()
+        .find(|(names, _)| names.iter().any(|n| n.as_bytes() == name))
+    {
+        return *takes_value;
     }
-    fn names(arg: &Arg) -> impl Iterator<Item = &[u8]> {
-        let aliases = arg.get_all_aliases().unwrap_or_default();
-        arg.get_long().into_iter().chain(aliases).map(str::as_bytes)
+    let mut prefixed = LONG_OPTS
+        .iter()
+        .filter(|(names, _)| names.iter().any(starts_with_name));
+    match (prefixed.next(), prefixed.next()) {
+        (Some((_, takes_value)), None) => *takes_value,
+        _ => false,
     }
-    let exact = cmd
-        .get_arguments()
-        .find(|arg| names(arg).any(|n| n == name));
-    let mut prefixed = cmd
-        .get_arguments()
-        .filter(|arg| names(arg).any(|n| n.starts_with(name)));
-    let arg = match (exact, prefixed.next(), prefixed.next()) {
-        (Some(arg), _, _) | (None, Some(arg), None) => arg,
-        _ => return false,
-    };
-    arg.get_action().takes_values() && !arg.is_require_equals_set()
 }
 
 impl Default for GlobSet {
@@ -1144,5 +1191,51 @@ impl<'a> ColorConfig<'a> {
 
         config.uses_grep_color = selected_from_grep_color || context_from_grep_color;
         config
+    }
+}
+
+#[cfg(test)]
+mod long_option_tests {
+    use super::*;
+
+    #[test]
+    fn long_option_table_matches_uu_app() {
+        let app = uu_app();
+        let mut expected: Vec<(Vec<&str>, bool)> = app
+            .get_arguments()
+            .filter_map(|arg| {
+                let mut names = vec![arg.get_long()?];
+                names.extend(arg.get_all_aliases().unwrap_or_default());
+                let takes_value = arg.get_action().takes_values() && !arg.is_require_equals_set();
+                Some((names, takes_value))
+            })
+            .collect();
+        let mut actual: Vec<(Vec<&str>, bool)> = LONG_OPTS
+            .iter()
+            .map(|(names, takes_value)| (names.to_vec(), *takes_value))
+            .collect();
+        expected.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn takes_next_arg() {
+        let cases: &[(&[u8], bool)] = &[
+            (b"regexp", true),
+            (b"reg", true),
+            (b"colo", false),
+            // An exact name wins over the longer option it is a prefix of.
+            (b"binary", false),
+            (b"binary-f", true),
+            // Ambiguous prefixes and unknown names are rejected by clap.
+            (b"e", false),
+            (b"ex", false),
+            (b"nope", false),
+            (b"reg=x", false),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(long_option_takes_next_arg(name), *expected, "{name:?}");
+        }
     }
 }
